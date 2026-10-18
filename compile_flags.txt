@@ -10,3 +10,4 @@
 -Wnull-dereference
 -Wno-gnu-zero-variadic-macro-arguments
 -Wno-c2y-extensions
+--target=x86_64-w64-mingw32

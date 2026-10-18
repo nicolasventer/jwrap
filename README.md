@@ -1,37 +1,35 @@
-# yyjsonWrap
+# jwrap
 
 ## Description
 
-yyjsonWrap is a **C++ library** that lets you **read and write JSON** and convert between JSON and your own types. It wraps [yyjson](https://github.com/ibireme/yyjson) (version: 21st May 2026, commit: 6945ccb).
+jwrap is a **C++ library** that lets you **read and write JSON** and convert between JSON and your own types. It wraps [yyjson](https://github.com/ibireme/yyjson) (version: 21st May 2026, commit: 6945ccb).
 
 ## Features
 
-- Read and write JSON (parse from string, build mutable documents, serialize to string)
-- Convert between JSON and structured data via `fromJson` / `toJson`
-- Header-only; define `IMPORT_YYJSON_IMPL` in one translation unit to pull in the implementation
-- Optional pretty-printing when serializing JSON via `EPrettyPrint`
-- Optional read flags when parsing JSON via `EReadFlag` (trailing commas, comments)
-- Optional extra primitive conversions: define `USE_PRIMITIVE_CONVERSION` for `unsigned int`, `signed char`, `unsigned char`, `unsigned short`, `float` (via `fromJson`/`toJson`)
-- Built-in `std::map` and `std::vector<std::pair>` conversion for JSON objects
+- Parse JSON text into a mutable `jw::Value`, build objects and arrays, and serialize them
+- Typed `get`, `try_get`, `at`, and `set` / `push`, with exceptions for missing keys, type mismatches, and out-of-range numbers
+- `std::optional`: a missing key or JSON null reads as `nullopt`, and an empty optional is omitted from an object
+- `std::vector`, `std::array`, C arrays, `std::map`, and `std::vector<std::pair>`
+- Struct fields registered with `JW_JSON_FIELDS` (up to 8 fields), or a custom `jw::Converter`
+- Optional parse flags for comments and trailing commas
+- Compact output, 4-space pretty print, and 2-space pretty print
+- Access to the underlying `yyjson_mut_val` and `yyjson_mut_doc`
 - Fast and dependency-free (yyjson is included in the repo)
-
-Note: Performance comes from yyjson; the wrapper adds a small, type-safe C++ layer on top.
 
 ## Installation
 
-### Header-only
-
-1. Add the `yyjsonWrap` folder to your include path.
-2. Include [`yyjsonWrap.hpp`](yyjsonWrap/yyjsonWrap.hpp) where you use the library.
-3. In **exactly one** translation unit, define `IMPORT_YYJSON_IMPL` before the include so the yyjson implementation is compiled:
+1. Add the `jwrap` folder to your include path, or include it by its path from the project root.
+2. Include [`jwrap.hpp`](jwrap/jwrap.hpp) where you use the library.
+3. Compile [`yyjson.c`](jwrap/yyjson/yyjson.c) in **exactly one** translation unit. The example does that by including the `.c` file:
 
 ```cpp
-#define IMPORT_YYJSON_IMPL
-#include "yyjsonWrap/yyjsonWrap.hpp"
-#undef IMPORT_YYJSON_IMPL
+#include "jwrap/jwrap.hpp"
+#include "jwrap/yyjson/yyjson.c"
 ```
 
-**Getting the code:** Clone this repo or download the `yyjsonWrap` folder via [this link](https://download-directory.github.io/?url=https%3A%2F%2Fgithub.com%2Fnicolasventer%2Fyyjson-wrap%2Ftree%2Fmain%2FyyjsonWrap). The yyjson sources are included under `yyjsonWrap/yyjson/`; you can also fetch the latest from the [yyjson repo](https://github.com/ibireme/yyjson/tree/master/src) if needed.
+You can instead pass `jwrap/yyjson/yyjson.c` to the compiler and include only the header in your sources.
+
+**Getting the code:** Clone this repo or download the `jwrap` folder via [this link](https://download-directory.github.io/?url=https%3A%2F%2Fgithub.com%2Fnicolasventer%2Fyyjson-wrap%2Ftree%2Fmain%2Fjwrap). The yyjson sources are included under `jwrap/yyjson/`; you can also fetch the latest from the [yyjson repo](https://github.com/ibireme/yyjson/tree/master/src) if needed.
 
 ### Requirements
 
@@ -45,75 +43,48 @@ Build the example with `build.bat` or `./build.sh`.
 Content of [example.cpp](example.cpp)
 
 ```cpp
+#include "jwrap/jwrap.hpp"
+#include "jwrap/yyjson/yyjson.c"
 #include <iostream>
-#include <map>
-#include <optional>
 #include <string>
 #include <vector>
 
-#define IMPORT_YYJSON_IMPL
-#include "yyjsonWrap/yyjsonWrap.hpp"
-#undef IMPORT_YYJSON_IMPL
+struct Address {
+    std::string city;
+    int zip;
+};
 
-namespace
-{
-	struct Address
-	{
-		std::string street;
-		std::string city;
-		std::string zipCode;
-	};
+JW_JSON_FIELDS(Address, city, zip)
 
-	struct Person
-	{
-		std::string name;
-		int age;
-		std::optional<Address> address;
-		std::vector<std::string> hobbies;
-		std::map<std::string, std::string> metadata;
-	};
-} // namespace
+struct User {
+    std::string name;
+    int age;
+    std::vector<std::string> tags;
+    Address address;
+};
 
-template <> void toJson(MutValueWrapper& value, const Address& a)
-{
-	value.set("street", a.street, "city", a.city, "zipCode", a.zipCode);
-}
+JW_JSON_FIELDS(User, name, age, tags, address)
 
-template <> void toJson(MutValueWrapper& value, const Person& p)
-{
-	value.set("name", p.name, "age", p.age, "address", p.address, "hobbies", p.hobbies, "metadata", p.metadata);
-}
+int main() {
+    User original{
+        "Alice",
+        30,
+        {"cpp", "yyjson"},
+        {"Singapore", 123456}
+    };
 
-template <> Address fromJson(const ValueWrapper& doc) { return Address{doc["street"], doc["city"], doc["zipCode"]}; }
+    auto value = jw::to_value(original);
+    std::string text = jw::stringify(value, true);
 
-template <> Person fromJson(const ValueWrapper& doc)
-{
-	return Person{doc["name"], doc["age"], doc["address"].asOptional<Address>(), doc["hobbies"], doc["metadata"]};
-}
+    std::cout << text << "\n\n";
 
-int main()
-{
-	const std::string json = R"(
-    {
-        "name": "Alice",
-        "age": 25,
-        "hobbies": ["reading", "coding"],
-        "metadata": {
-            "department": "Engineering",
-            "level": "Senior"
-        }
-    }
-    )";
-	const DocWrapper doc(json);
-	const ValueWrapper value = doc;
-	Person p = value;
-	p.address = Address{"123 Main St", "New York", "10001"};
-	p.metadata["team"] = "Platform";
-	const MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-	root = p;
-	const std::string serialized = mutDoc.toString(EPrettyPrint::Pretty);
-	std::cout << serialized << "\n";
+    auto parsed = jw::parse(text);
+    User copy = jw::from_json<User>(parsed);
+
+    std::cout << copy.name << '\n';
+    std::cout << copy.age << '\n';
+    std::cout << copy.address.city << '\n';
+    std::cout << copy.tags.at(0) << '\n';
 }
 ```
 
@@ -122,22 +93,21 @@ int main()
 ```
 {
     "name": "Alice",
-    "age": 25,
-    "hobbies": [
-        "reading",
-        "coding"
+    "age": 30,
+    "tags": [
+        "cpp",
+        "yyjson"
     ],
-    "metadata": {
-        "department": "Engineering",
-        "level": "Senior",
-        "team": "Platform"
-    },
     "address": {
-        "street": "123 Main St",
-        "city": "New York",
-        "zipCode": "10001"
+        "city": "Singapore",
+        "zip": 123456
     }
 }
+
+Alice
+30
+Singapore
+cpp
 ```
 
 ## Testing
@@ -152,207 +122,96 @@ This compiles `tests/testMain.cpp` and runs the resulting executable. A coverage
 
 ## Usage
 
-_The usage is not exhaustive._
-
 ### Reading JSON
 
 ```cpp
-// Parse JSON from string
-DocWrapper doc(jsonString);
+jw::Value root = jw::parse(jsonString);
 
-// Parse JSON with comments and/or trailing commas
-DocWrapper relaxedDoc(jsonString, EReadFlag::AllowCommentsAndTrailingCommas);
+std::string name = root.get<std::string>("name");
+int age = root["age"].get<int>();
+std::vector<std::string> hobbies = root.get<std::vector<std::string>>("hobbies");
 
-// Access values
-ValueWrapper root = doc;
-ValueWrapper name = root["name"];
-std::string nameStr = name;  // Conversion operator
-int age = root["age"];       // Conversion operator
-std::vector<std::string> hobbies = root["hobbies"];  // Vector conversion
-
-// Check if key exists
-if (root.hasKey("address")) {
-    // Access nested object
-    Address addr = root["address"];
+if (root.has_key("address")) {
+    std::string city = root["address"]["city"].get<std::string>();
 }
 
-// Access array elements
-ValueWrapper firstHobby = root["hobbies"][0];
+// nullopt when the key is absent. A present null or a wrong type still throws.
+std::optional<int> maybeAge = root.try_get<int>("age");
 
-// Read JSON objects as maps
-std::map<std::string, std::string> metadata = root["metadata"];
+// nullopt when the key is absent or the value is JSON null.
+std::optional<int> score = root.get<std::optional<int>>("score");
 ```
+
+Parse comments and trailing commas with `jw::read_flag`:
+
+```cpp
+jw::Value relaxed = jw::parse(
+    text, jw::read_flag::allow_comments_and_trailing_commas);
+```
+
+`read_flag` also has `allow_comments` and `allow_trailing_commas`.
 
 ### Writing JSON
 
 ```cpp
-// Create a mutable document
-MutDocWrapper mutDoc;
-MutValueWrapper root = mutDoc;
+jw::Value root = jw::object();
+root.set("name", "Alice").set("age", 25);
 
-// Set object properties
-root.set("name", "Alice", "age", 25);
-
-// Add to arrays
-root.add("item1", "item2", "item3");
-
-// Or add vectors
-std::vector<std::string> hobbies = {"reading", "coding"};
+jw::Value hobbies = jw::array();
+hobbies.push("reading").push("coding");
 root.set("hobbies", hobbies);
 
-// Set or merge maps
-std::map<std::string, std::string> metadata = {{"department", "Engineering"}};
+// An empty optional removes the key. A present one writes the value.
+root.set("score", std::optional<int>{7});
+root.set("nickname", std::optional<std::string>{});
+
+std::string compact = root.dump();
+std::string pretty = root.dump(true); // 4 spaces
+std::string twoSpaces = root.dump(jw::write_flag::pretty_two_spaces);
+```
+
+`jw::stringify` is the same as `dump`. `set` replaces an existing key.
+
+### Containers
+
+```cpp
+std::map<std::string, int> metadata{{"level", 2}};
 root.set("metadata", metadata);
-root.addMap(std::map<std::string, int>{{"a", 1}, {"b", 2}});
 
-// Convert to string (compact by default)
-std::string json = mutDoc.toString();
+std::vector<std::pair<std::string, int>> ordered{{"b", 2}, {"a", 1}};
+root.set("ordered", ordered);
 
-// Pretty-print with 4-space indentation
-std::string pretty = mutDoc.toString(EPrettyPrint::Pretty);
+std::array<int, 3> scores{1, 2, 3};
+root.set("scores", scores);
 
-// Pretty-print with 2-space indentation
-std::string compactPretty = mutDoc.toString(EPrettyPrint::PrettyTwoSpaces);
+int raw[3] = {4, 5, 6};
+root.set("raw", raw);
+int destination[3] = {};
+root["raw"].read_to(destination);
 ```
 
-### Custom Types
+Object keys must encode as JSON strings. A `std::map` is ordered by key. A `std::vector<std::pair>` keeps insertion order. `std::array` and `read_to` throw when the JSON array length does not match.
+
+### Custom types
+
+`JW_JSON_FIELDS` is invoked at global scope and accepts up to 8 fields. A `std::optional` field is omitted when empty.
 
 ```cpp
-// Implement toJson for writing custom types
-template <> void toJson(MutValueWrapper& value, const MyType& obj)
-{
-    value.set("field1", obj.field1, "field2", obj.field2);
-}
+struct Address {
+    std::string city;
+    int zip;
+};
 
-// Implement fromJson for reading custom types
-template <> MyType fromJson(const ValueWrapper& doc)
-{
-    return MyType{doc["field1"], doc["field2"]};
-}
+JW_JSON_FIELDS(Address, city, zip)
 ```
 
-### Main API
+For a type the macro does not cover, specialize `jw::Converter<T>` with `encode` and `decode`.
 
-```cpp
-enum class EPrettyPrint : uint8_t
-{
-    None = YYJSON_WRITE_NOFLAG,
-    Pretty = YYJSON_WRITE_PRETTY,
-    PrettyTwoSpaces = YYJSON_WRITE_PRETTY_TWO_SPACES
-};
+### Errors and yyjson handles
 
-namespace EReadFlag
-{
-    enum Type : uint8_t
-    {
-        None = YYJSON_READ_NOFLAG,
-        AllowTrailingCommas = YYJSON_READ_ALLOW_TRAILING_COMMAS,
-        AllowComments = YYJSON_READ_ALLOW_COMMENTS,
-        AllowCommentsAndTrailingCommas = AllowComments | AllowTrailingCommas,
-    };
-}
+`jw::parse_error`, `jw::type_error`, and `jw::missing_key` derive from `jw::error`. Number conversions throw `std::out_of_range` when the value does not fit. NaN and infinity cannot be encoded.
 
-// Reading JSON
-class DocWrapper
-{
-public:
-    // Parse JSON from string or buffer
-    DocWrapper(const char* data, size_t len, EReadFlag::Type readFlag = EReadFlag::None);
-    DocWrapper(const std::string& data, EReadFlag::Type readFlag = EReadFlag::None);
-    operator ValueWrapper() const;
-    std::string toString(EPrettyPrint prettyPrint = EPrettyPrint::None) const;
-    // Move-only; doc/root are internal.
-
-    class ValueWrapper
-    {
-    public:
-        // Conversion operators
-        operator int() const;
-        operator int64_t() const;
-        operator uint64_t() const;
-        operator double() const;
-        operator bool() const;
-        operator std::string() const;
-        template <typename T> operator std::vector<T>() const;
-        template <typename T, size_t N> operator std::array<T, N>() const;
-        template <typename T, size_t N> void fillArray(T (&arr)[N]) const;
-        template <typename T, typename U> operator std::map<T, U>() const;
-        template <typename T, typename U> operator std::vector<std::pair<T, U>>() const;
-        template <typename T> operator T() const;  // Uses fromJson<T>
-        template <typename T> std::optional<T> asOptional() const;  // Must be explicitly called when the value is optional
-        template <typename TTo, typename TFrom> TTo internal_cast() const;  // Explicit conversion via an intermediate type
-
-        // Access
-        ValueWrapper operator[](const char* key) const;
-        ValueWrapper operator[](size_t index) const;
-        ValueWrapper operator[](int index) const;
-        bool hasKey(const char* key) const;
-
-        std::string toString(EPrettyPrint prettyPrint = EPrettyPrint::None) const;
-
-        yyjson_val* val_;
-        yyjson_doc* doc_;
-    };
-};
-
-// Writing JSON
-class MutDocWrapper
-{
-public:
-    MutDocWrapper();  // Empty document with root object
-    operator MutValueWrapper() const;
-    std::string toString(EPrettyPrint prettyPrint = EPrettyPrint::None) const;
-
-    class MutValueWrapper
-    {
-    public:
-        MutValueWrapper& asObj();   // Ensure value is an object
-        MutValueWrapper& asArr();   // Ensure value is an array
-
-        // Object: set key-value pairs. Does NOT override existing keys.
-        template <typename... Args> void set(Args&&... args);
-        template <typename T> void setNoCheck(const char* key, const T& value);
-        template <typename T, typename U> void addMap(const std::map<T, U>& valueList);
-        template <typename T, typename U> void addMap(const std::vector<std::pair<T, U>>& valueList);
-
-        // Array: add elements
-        template <typename... Args> void add(Args&&... args);
-        template <typename T> void addArray(const std::vector<T>& valueList);
-        template <typename T, size_t N> void addArray(const std::array<T, N>& valueList);
-        template <typename T, size_t N> void addArray(const T (&valueList)[N]);
-
-        // Assignment: set this value to a primitive, vector, array, or custom type
-        MutValueWrapper& operator=(int value);
-        MutValueWrapper& operator=(int64_t value);
-        MutValueWrapper& operator=(uint64_t value);
-        MutValueWrapper& operator=(double value);
-        MutValueWrapper& operator=(bool value);
-        MutValueWrapper& operator=(const std::string& value);
-        MutValueWrapper& operator=(const char* value);
-        template <typename T> MutValueWrapper& operator=(const std::vector<T>& value);
-        template <typename T, size_t N> MutValueWrapper& operator=(const std::array<T, N>& value);
-        template <typename T, size_t N> MutValueWrapper& operator=(const T (&value)[N]);
-        template <typename T, typename U> MutValueWrapper& operator=(const std::map<T, U>& value);
-        template <typename T, typename U> MutValueWrapper& operator=(const std::vector<std::pair<T, U>>& value);
-        template <typename T> MutValueWrapper& operator=(const T& value);
-        template <typename T> MutValueWrapper& operator=(const std::optional<T>& value);
-
-        std::string toString(EPrettyPrint prettyPrint = EPrettyPrint::None) const;
-
-        yyjson_mut_val* val_;     // Direct access to underlying value
-        yyjson_mut_doc* mutDoc_;  // Direct access to underlying document
-    };
-};
-
-// Custom type conversion (specialize these for your types)
-template <typename T> T fromJson(const ValueWrapper& doc);
-template <typename T> void toJson(MutValueWrapper& value, const T& obj);
-
-using ValueWrapper = DocWrapper::ValueWrapper;
-using MutValueWrapper = MutDocWrapper::MutValueWrapper;
-```
-
-**Note:** You should never manually call `fromJson` or `toJson`. Use implicit conversion (e.g. `Person p = value;`) or `static_cast<T>(value)` instead.
+`mut_val()` and `mut_doc()` return the `yyjson_mut_val*` and `yyjson_mut_doc*` owned by the value. Do not free them.
 
 ## License
 

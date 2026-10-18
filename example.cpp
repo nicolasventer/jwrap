@@ -1,70 +1,45 @@
+#include "jwrap/jwrap.hpp"
+#include "jwrap/yyjson/yyjson.c"
 #include <iostream>
-#include <map>
-#include <optional>
 #include <string>
 #include <vector>
 
-#define IMPORT_YYJSON_IMPL
-#include "yyjsonWrap/yyjsonWrap.hpp"
-#undef IMPORT_YYJSON_IMPL
+struct Address {
+    std::string city;
+    int zip;
+};
 
-namespace
-{
-	struct Address
-	{
-		std::string street;
-		std::string city;
-		std::string zipCode;
-	};
+JW_JSON_FIELDS(Address, city, zip)
 
-	struct Person
-	{
-		std::string name;
-		int age;
-		std::optional<Address> address;
-		std::vector<std::string> hobbies;
-		std::map<std::string, std::string> metadata;
-	};
-} // namespace
+struct User {
+    std::string name;
+    int age;
+    std::vector<std::string> tags;
+    Address address;
+};
 
-template <> void toJson(MutValueWrapper& value, const Address& a)
-{
-	value.set("street", a.street, "city", a.city, "zipCode", a.zipCode);
-}
+JW_JSON_FIELDS(User, name, age, tags, address)
 
-template <> void toJson(MutValueWrapper& value, const Person& p)
-{
-	value.set("name", p.name, "age", p.age, "address", p.address, "hobbies", p.hobbies, "metadata", p.metadata);
-}
+int main() {
+    User original{
+        "Alice",
+        30,
+        {"cpp", "yyjson"},
+        {"Singapore", 123456}
+    };
 
-template <> Address fromJson(const ValueWrapper& doc) { return Address{doc["street"], doc["city"], doc["zipCode"]}; }
+    // C++ struct -> JSON
+    auto value = jw::to_value(original);
+    std::string text = jw::stringify(value, true);
 
-template <> Person fromJson(const ValueWrapper& doc)
-{
-	return Person{doc["name"], doc["age"], doc["address"].asOptional<Address>(), doc["hobbies"], doc["metadata"]};
-}
+    std::cout << text << "\n\n";
 
-int main()
-{
-	const std::string json = R"(
-    {
-        "name": "Alice",
-        "age": 25,
-        "hobbies": ["reading", "coding"],
-        "metadata": {
-            "department": "Engineering",
-            "level": "Senior"
-        }
-    }
-    )";
-	const DocWrapper doc(json);
-	const ValueWrapper value = doc;
-	Person p = value;
-	p.address = Address{"123 Main St", "New York", "10001"};
-	p.metadata["team"] = "Platform";
-	const MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-	root = p;
-	const std::string serialized = mutDoc.toString(EPrettyPrint::Pretty);
-	std::cout << serialized << "\n";
+    // JSON -> C++ struct
+    auto parsed = jw::parse(text);
+    User copy = jw::from_json<User>(parsed);
+
+    std::cout << copy.name << '\n';
+    std::cout << copy.age << '\n';
+    std::cout << copy.address.city << '\n';
+    std::cout << copy.tags.at(0) << '\n';
 }

@@ -1,708 +1,207 @@
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 #include "doctest.h"
 
+#include "../jwrap/jwrap.hpp"
+#include "../jwrap/yyjson/yyjson.c"
+
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
-#define IMPORT_YYJSON_IMPL
-#include "../yyjsonWrap/yyjsonWrap.hpp"
-#undef IMPORT_YYJSON_IMPL
-
-// Test structures for custom type conversion
-struct Address
-{
-	std::string street;
-	std::string city;
-	std::string zipCode;
-
-	bool operator==(const Address& other) const
-	{
-		return street == other.street && city == other.city && zipCode == other.zipCode;
-	}
+struct City {
+    std::string name;
 };
 
-struct Person
-{
-	std::string name;
-	int age;
-	std::vector<std::string> hobbies;
+JW_JSON_FIELDS(City, name)
 
-	bool operator==(const Person& other) const { return name == other.name && age == other.age && hobbies == other.hobbies; }
+struct Resident {
+    std::string name;
+    std::optional<City> city;
+    std::vector<std::string> tags;
 };
 
-struct PersonWithOptional
-{
-	std::string name;
-	std::optional<Address> address;
-	std::optional<int> score;
+JW_JSON_FIELDS(Resident, name, city, tags)
 
-	bool operator==(const PersonWithOptional& other) const
-	{
-		return name == other.name && address == other.address && score == other.score;
-	}
-};
+using StringMap = std::map<std::string, int>;
+using StringPairs = std::vector<std::pair<std::string, int>>;
+using IntMap = std::map<int, int>;
+using TwoInts = std::array<int, 2>;
 
-struct ScoreCard
-{
-	static constexpr size_t N = 3;
-	std::string label;
-	int scores[N] = {0, 0, 0};
+TEST_CASE("parse errors and read flags") {
+    CHECK_THROWS_AS(jw::parse("{"), jw::parse_error);
 
-	bool operator==(const ScoreCard& other) const
-	{
-		if (label != other.label) return false;
-		for (size_t i = 0; i < N; ++i)
-			if (scores[i] != other.scores[i]) return false;
-		return true;
-	}
-};
+    CHECK_THROWS_AS(jw::parse(R"({ "a": 1, })"), jw::parse_error);
+    CHECK(jw::parse(R"({ "a": 1, })", jw::read_flag::allow_trailing_commas).get<int>("a") == 1);
 
-// Custom type conversions
-template <> void toJson(MutValueWrapper& value, const Address& a)
-{
-	value.set("street", a.street, "city", a.city, "zipCode", a.zipCode);
+    CHECK_THROWS_AS(jw::parse(R"({ /*note*/ "a": 1 })"), jw::parse_error);
+    CHECK(jw::parse(R"({ /*note*/ "a": 1 })", jw::read_flag::allow_comments).get<int>("a") == 1);
+
+    const auto both = jw::parse(
+        R"({ /*note*/ "a": 1, })", jw::read_flag::allow_comments_and_trailing_commas);
+    CHECK(both.get<int>("a") == 1);
 }
 
-template <> void toJson(MutValueWrapper& value, const Person& p)
-{
-	value.set("name", p.name, "age", p.age, "hobbies", p.hobbies);
+TEST_CASE("compact, 4-space, and 2-space output") {
+    const auto value = jw::object().set("a", 1);
+    const std::string pretty = "{\n    \"a\": 1\n}";
+    const std::string two_spaces = "{\n  \"a\": 1\n}";
+
+    CHECK(value.dump() == "{\"a\":1}");
+    CHECK(value.dump(false) == "{\"a\":1}");
+    CHECK(value.dump(true) == pretty);
+    CHECK(value.dump(jw::write_flag::compact) == "{\"a\":1}");
+    CHECK(value.dump(jw::write_flag::pretty) == pretty);
+    CHECK(value.dump(jw::write_flag::pretty_two_spaces) == two_spaces);
+    CHECK(jw::stringify(value, true) == pretty);
+    CHECK(jw::stringify(value, jw::write_flag::pretty_two_spaces) == two_spaces);
 }
 
-template <> void toJson(MutValueWrapper& value, const PersonWithOptional& p)
-{
-	value.set("name", p.name, "address", p.address, "score", p.score);
+TEST_CASE("primitive conversions, range checks, and type errors") {
+    CHECK(jw::parse("true").get<bool>());
+    CHECK(jw::parse("\"hi\"").get<std::string>() == "hi");
+    CHECK(jw::parse("-5").get<int>() == -5);
+    CHECK(jw::parse("1.5").get<double>() == doctest::Approx(1.5));
+    CHECK(jw::to_value(std::string("ok")).get<std::string>() == "ok");
+
+    const auto huge = jw::parse("18446744073709551615");
+    CHECK(huge.get<uint64_t>() == UINT64_MAX);
+    CHECK_THROWS_AS(huge.get<int64_t>(), std::out_of_range);
+    CHECK_THROWS_AS(jw::parse("-1").get<unsigned>(), std::out_of_range);
+    CHECK_THROWS_AS(jw::parse("1.5").get<int>(), jw::type_error);
+    CHECK_THROWS_AS(jw::parse("\"hi\"").get<int>(), jw::type_error);
+    CHECK_THROWS_AS(jw::to_value(std::numeric_limits<double>::quiet_NaN()), jw::error);
+    CHECK_THROWS_AS(jw::to_value(std::numeric_limits<double>::infinity()), jw::error);
 }
 
-template <> Address fromJson(const ValueWrapper& doc) { return Address{doc["street"], doc["city"], doc["zipCode"]}; }
+TEST_CASE("objects: replace, has_key, and operator[]") {
+    auto root = jw::parse(R"({"address":{"city":"Boston"},"nums":[10,20]})");
 
-template <> Person fromJson(const ValueWrapper& doc) { return Person{doc["name"], doc["age"], doc["hobbies"]}; }
+    CHECK(root.has_key("address"));
+    CHECK_FALSE(root.has_key("missing"));
+    CHECK_FALSE(root["nums"].has_key("city"));
+    CHECK(root["address"]["city"].get<std::string>() == "Boston");
+    CHECK(root["nums"][1].get<int>() == 20);
 
-template <> PersonWithOptional fromJson(const ValueWrapper& doc)
-{
-	return PersonWithOptional{doc["name"], doc["address"].asOptional<Address>(), doc["score"].asOptional<int>()};
+    root.set("address", 7);
+    CHECK(root.size() == 2);
+    CHECK(root.get<int>("address") == 7);
+
+    CHECK_THROWS_AS(root.get<int>("missing"), jw::missing_key);
+    CHECK_THROWS_AS(root["missing"], jw::missing_key);
+    CHECK_THROWS_AS(root["nums"][5], std::out_of_range);
+    CHECK_THROWS_AS(jw::array()["city"], jw::error);
+    CHECK_THROWS_AS(jw::object()[0], jw::error);
 }
 
-template <> void toJson(MutValueWrapper& value, const ScoreCard& w) { value.set("label", w.label, "scores", w.scores); }
-template <> ScoreCard fromJson(const ValueWrapper& doc)
-{
-	ScoreCard w{doc["label"], {}};
-	doc["scores"].fillArray(w.scores);
-	return w;
+TEST_CASE("try_get distinguishes a missing key from JSON null") {
+    const auto root = jw::parse(R"({"age":null,"name":"Ada"})");
+
+    CHECK_FALSE(root.try_get<int>("missing").has_value());
+    CHECK(root.try_get<std::string>("name").value() == "Ada");
+    CHECK_THROWS_AS(root.try_get<int>("age"), jw::type_error);
+    CHECK_FALSE(root.get<std::optional<int>>("age").has_value());
+    CHECK_FALSE(root.get<std::optional<int>>("missing").has_value());
+    CHECK_THROWS_AS(jw::array().try_get<int>("age"), jw::error);
 }
 
-// ============================================================================
-// Tests for DocWrapper (Reading JSON)
-// ============================================================================
+TEST_CASE("arrays and vectors") {
+    auto values = jw::array();
+    values.push(1).push(2);
+    CHECK(values.size() == 2);
+    CHECK(values.at<int>(0) == 1);
+    CHECK_THROWS_AS(values.at<int>(2), std::out_of_range);
 
-TEST_CASE("DocWrapper - Parse simple JSON object")
-{
-	std::string json = R"({"name":"Alice","age":25})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
-
-	CHECK(root.hasKey("name"));
-	CHECK(root.hasKey("age"));
-	CHECK_FALSE(root.hasKey("nonexistent"));
+    const std::vector<int> numbers{3, 4};
+    const auto encoded = jw::to_value(numbers);
+    CHECK(encoded.get<std::vector<int>>() == numbers);
+    CHECK_THROWS_AS(jw::object().get<std::vector<int>>(), jw::type_error);
 }
 
-TEST_CASE("DocWrapper - Parse JSON with comments")
-{
-	std::string json = R"({
-		// user info
-		"name": "Alice",
-		"age": 25 /* years */
-	})";
-	DocWrapper doc(json, EReadFlag::AllowComments);
-	ValueWrapper root = doc;
+TEST_CASE("maps and vectors of pairs") {
+    const StringMap ordered{{"b", 2}, {"a", 1}};
+    const auto map_value = jw::to_value(ordered);
+    CHECK(map_value.dump() == R"({"a":1,"b":2})");
+    CHECK(jw::from_json<StringMap>(map_value) == ordered);
 
-	CHECK(static_cast<std::string>(root["name"]) == "Alice");
-	CHECK(static_cast<int>(root["age"]) == 25);
+    const StringPairs pairs{{"b", 2}, {"a", 1}};
+    const auto pair_value = jw::to_value(pairs);
+    CHECK(pair_value.dump() == R"({"b":2,"a":1})");
+    CHECK(jw::from_json<StringPairs>(pair_value) == pairs);
+    CHECK_THROWS_AS(jw::to_value(IntMap{{1, 2}}), jw::type_error);
+    CHECK_THROWS_AS(jw::array().get<StringMap>(), jw::type_error);
 }
 
-TEST_CASE("DocWrapper - Read primitive types")
-{
-	std::string json = R"({"intVal":42,"doubleVal":3.14,"boolVal":true,"stringVal":"hello"})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
+TEST_CASE("std::array and C arrays") {
+    const TwoInts fixed{4, 5};
+    const auto encoded = jw::to_value(fixed);
+    CHECK(jw::from_json<TwoInts>(encoded) == fixed);
+    CHECK_THROWS_AS(jw::parse("[1]").get<TwoInts>(), jw::type_error);
 
-	CHECK(static_cast<int>(root["intVal"]) == 42);
-	CHECK(static_cast<double>(root["doubleVal"]) == doctest::Approx(3.14));
-	CHECK(static_cast<bool>(root["boolVal"]) == true);
-	CHECK(static_cast<std::string>(root["stringVal"]) == "hello");
+    const int raw[3] = {7, 8, 9};
+    const auto array_value = jw::to_value(raw);
+    int destination[3] = {};
+    array_value.read_to(destination);
+    CHECK(destination[0] == 7);
+    CHECK(destination[1] == 8);
+    CHECK(destination[2] == 9);
+
+    int short_destination[2] = {};
+    CHECK_THROWS_AS(array_value.read_to(short_destination), jw::type_error);
 }
 
-TEST_CASE("DocWrapper - Read arrays")
-{
-	std::string json = R"({"numbers":[1,2,3],"strings":["a","b","c"]})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
+TEST_CASE("optional values are omitted from objects and become null in arrays") {
+    auto root = jw::object();
+    root.set("keep", std::optional<int>{7});
+    root.set("drop", std::optional<int>{});
+    CHECK(root.has_key("keep"));
+    CHECK(root.get<int>("keep") == 7);
+    CHECK_FALSE(root.has_key("drop"));
 
-	std::vector<int> numbers = root["numbers"];
-	CHECK(numbers == std::vector<int>{1, 2, 3});
+    root.set("keep", std::optional<int>{});
+    CHECK_FALSE(root.has_key("keep"));
 
-	std::vector<std::string> strings = root["strings"];
-	CHECK(strings == std::vector<std::string>{"a", "b", "c"});
+    auto values = jw::array();
+    values.push(std::optional<int>{});
+    values.push(std::optional<int>{4});
+    CHECK(values[0].is_null());
+    CHECK_FALSE(values.at<std::optional<int>>(0).has_value());
+    CHECK(values.at<std::optional<int>>(1).value() == 4);
 }
 
-TEST_CASE("DocWrapper - Read arrays as std::array")
-{
-	std::string json = R"({"numbers":[1,2,3],"strings":["a","b","c"]})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
+TEST_CASE("nested structs registered with JW_JSON_FIELDS") {
+    const Resident original{"Ada", City{"London"}, {"math", "logic"}};
+    const auto value = jw::to_value(original);
+    const Resident copy = jw::from_json<Resident>(value);
 
-	std::array<int, 3> numbers = root["numbers"];
-	CHECK(numbers == std::array<int, 3>{1, 2, 3});
+    CHECK(copy.name == "Ada");
+    REQUIRE(copy.city.has_value());
+    CHECK(copy.city->name == "London");
+    CHECK(copy.tags == std::vector<std::string>{"math", "logic"});
 
-	std::array<std::string, 3> strings = root["strings"];
-	CHECK(strings == std::array<std::string, 3>{"a", "b", "c"});
+    const Resident without_city{"Bob", std::nullopt, {}};
+    const std::string dumped = jw::to_value(without_city).dump();
+    CHECK(dumped.find("city") == std::string::npos);
+
+    const Resident read = jw::from_json<Resident>(jw::parse(dumped));
+    CHECK(read.name == "Bob");
+    CHECK_FALSE(read.city.has_value());
+    CHECK(read.tags.empty());
+
+    const auto null_city = jw::parse(R"({"name":"C","city":null,"tags":[]})");
+    CHECK_FALSE(jw::from_json<Resident>(null_city).city.has_value());
+    CHECK_THROWS_AS(jw::parse(R"({"tags":[]})").get<Resident>(), jw::missing_key);
 }
 
-TEST_CASE("DocWrapper - Read arrays into C-style arrays")
-{
-	std::string json = R"({"numbers":[1,2,3],"strings":["a","b","c"]})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
-
-	int numbers[3] = {0, 0, 0};
-	root["numbers"].fillArray(numbers);
-	CHECK(numbers[0] == 1);
-	CHECK(numbers[1] == 2);
-	CHECK(numbers[2] == 3);
-
-	std::string strings[3];
-	root["strings"].fillArray(strings);
-	CHECK(strings[0] == "a");
-	CHECK(strings[1] == "b");
-	CHECK(strings[2] == "c");
-}
-
-TEST_CASE("DocWrapper - Access array elements by index")
-{
-	std::string json = R"({"items":[10,20,30]})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
-
-	CHECK(static_cast<int>(root["items"][0]) == 10);
-	CHECK(static_cast<int>(root["items"][1]) == 20);
-	CHECK(static_cast<int>(root["items"][2]) == 30);
-}
-
-TEST_CASE("DocWrapper - Read map")
-{
-	std::string json = R"({"metadata":{"department":"Engineering","level":"Senior"}})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
-
-	std::map<std::string, std::string> metadata = root["metadata"];
-	CHECK(metadata == std::map<std::string, std::string>{{"department", "Engineering"}, {"level", "Senior"}});
-}
-
-TEST_CASE("DocWrapper - Read map with numeric values")
-{
-	std::string json = R"({"scores":{"alice":10,"bob":20}})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
-
-	std::map<std::string, int> scores = root["scores"];
-	CHECK(scores == std::map<std::string, int>{{"alice", 10}, {"bob", 20}});
-}
-
-TEST_CASE("DocWrapper - Read map from non-object yields empty map")
-{
-	std::string json = R"({"notAMap":[1,2,3]})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
-
-	std::map<std::string, int> empty = root["notAMap"];
-	CHECK(empty.empty());
-}
-
-TEST_CASE("DocWrapper - Nested objects")
-{
-	std::string json = R"({"person":{"name":"Bob","age":30}})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
-
-	CHECK(static_cast<std::string>(root["person"]["name"]) == "Bob");
-	CHECK(static_cast<int>(root["person"]["age"]) == 30);
-}
-
-TEST_CASE("DocWrapper - Custom type conversion")
-{
-	std::string json = R"({"street":"123 Main St","city":"New York","zipCode":"10001"})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
-
-	Address addr = root;
-	CHECK(addr.street == "123 Main St");
-	CHECK(addr.city == "New York");
-	CHECK(addr.zipCode == "10001");
-}
-
-TEST_CASE("DocWrapper - toString roundtrip")
-{
-	std::string original = R"({"name":"Test","value":42})";
-	DocWrapper doc(original);
-	std::string serialized = doc.toString();
-
-	// Parse again to verify
-	DocWrapper doc2(serialized);
-	ValueWrapper root = doc2;
-	CHECK(static_cast<std::string>(root["name"]) == "Test");
-	CHECK(static_cast<int>(root["value"]) == 42);
-}
-
-// ============================================================================
-// Tests for MutDocWrapper (Writing JSON)
-// ============================================================================
-
-TEST_CASE("MutDocWrapper - Create empty document")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-	std::string json = mutDoc.toString();
-	CHECK(json.find('{') != std::string::npos); // Should be a valid JSON object
-}
-
-TEST_CASE("MutDocWrapper - Set primitive values")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	root.set("intVal", 42, "doubleVal", 3.14, "boolVal", true, "stringVal", "hello");
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	CHECK(static_cast<int>(readRoot["intVal"]) == 42);
-	CHECK(static_cast<double>(readRoot["doubleVal"]) == doctest::Approx(3.14));
-	CHECK(static_cast<bool>(readRoot["boolVal"]) == true);
-	CHECK(static_cast<std::string>(readRoot["stringVal"]) == "hello");
-}
-
-TEST_CASE("MutDocWrapper - Add array elements")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	// Create array directly using set with vector
-	std::vector<int> itemsVec{1, 2, 3};
-	root.set("items", itemsVec);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	std::vector<int> items = readRoot["items"];
-	CHECK(items == std::vector<int>{1, 2, 3});
-}
-
-TEST_CASE("MutDocWrapper - Add vector to array")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	std::vector<std::string> hobbies = {"reading", "coding", "gaming"};
-	root.set("hobbies", hobbies);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	std::vector<std::string> result = readRoot["hobbies"];
-	CHECK(result == hobbies);
-}
-
-TEST_CASE("MutDocWrapper - Add std::array to document")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	std::array<int, 3> itemsArr{1, 2, 3};
-	root.set("items", itemsArr);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	std::vector<int> items = readRoot["items"];
-	CHECK(items == std::vector<int>{1, 2, 3});
-}
-
-TEST_CASE("MutDocWrapper - Add std::array of strings")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	std::array<std::string, 3> hobbies = {"reading", "coding", "gaming"};
-	root.set("hobbies", hobbies);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	std::vector<std::string> result = readRoot["hobbies"];
-	CHECK(result == std::vector<std::string>{"reading", "coding", "gaming"});
-}
-
-TEST_CASE("MutDocWrapper - Add C-style array to document")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	int items[] = {1, 2, 3};
-	root.set("items", items);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	std::vector<int> result = readRoot["items"];
-	CHECK(result == std::vector<int>{1, 2, 3});
-}
-
-TEST_CASE("MutDocWrapper - Set map on document")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	std::map<std::string, std::string> metadata = {{"department", "Engineering"}, {"level", "Senior"}};
-	root.set("metadata", metadata);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	std::map<std::string, std::string> result = readRoot["metadata"];
-	CHECK(result == metadata);
-}
-
-TEST_CASE("MutDocWrapper - addMap merges into object")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	root.set("existing", "keep");
-	std::map<std::string, int> extra = {{"a", 1}, {"b", 2}};
-	root.addMap(extra);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	CHECK(static_cast<std::string>(readRoot["existing"]) == "keep");
-	CHECK(static_cast<int>(readRoot["a"]) == 1);
-	CHECK(static_cast<int>(readRoot["b"]) == 2);
-}
-
-TEST_CASE("MutDocWrapper - addMap from vector of pairs")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	std::vector<std::pair<std::string, int>> pairs = {{"x", 10}, {"y", 20}};
-	root.addMap(pairs);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	CHECK(static_cast<int>(readRoot["x"]) == 10);
-	CHECK(static_cast<int>(readRoot["y"]) == 20);
-}
-
-TEST_CASE("MutDocWrapper - Serialization with C-style array")
-{
-	ScoreCard original;
-	original.label = "round1";
-	original.scores[0] = 10;
-	original.scores[1] = 20;
-	original.scores[2] = 30;
-
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-	toJson(root, original);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-	ScoreCard result = readRoot;
-
-	CHECK(result == original);
-}
-
-TEST_CASE("MutDocWrapper - Nested objects")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	// Create nested object using Address struct
-	Address addr{"123 Main St", "New York", "10001"};
-	root.set("address", addr);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	// Verify nested object structure
-	CHECK(static_cast<std::string>(readRoot["address"]["street"]) == "123 Main St");
-	CHECK(static_cast<std::string>(readRoot["address"]["city"]) == "New York");
-	CHECK(static_cast<std::string>(readRoot["address"]["zipCode"]) == "10001");
-}
-
-TEST_CASE("MutDocWrapper - Custom type serialization")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	Person p{"Alice", 25, {"reading", "coding"}};
-	toJson(root, p);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	Person result = readRoot;
-	CHECK(result == p);
-}
-
-// ============================================================================
-// Tests for MutValueWrapper assignment (operator=)
-// ============================================================================
-
-TEST_CASE("Assignment - primitives and containers")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-	root = 42;
-	CHECK(root.toString() == "42");
-	root = 3.14;
-	CHECK(root.toString() == "3.14");
-	root = true;
-	CHECK(root.toString() == "true");
-	root = "hi";
-	CHECK(root.toString() == "\"hi\""); // JSON string includes quotes
-	root = std::vector<int>{1, 2, 3};
-	CHECK(root.toString() == "[1,2,3]");
-	std::array<int, 2> arr = {10, 20};
-	root = arr;
-	CHECK(root.toString() == "[10,20]");
-	std::map<std::string, int> m = {{"one", 1}, {"two", 2}};
-	root = m;
-	CHECK(root.toString() == "{\"one\":1,\"two\":2}");
-}
-
-TEST_CASE("Assignment - custom type and overwrite")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-	root = Address{"789 Elm", "Chicago", "60601"};
-	CHECK(root.toString() == "{\"street\":\"789 Elm\",\"city\":\"Chicago\",\"zipCode\":\"60601\"}");
-	root = 999;
-	CHECK(root.toString() == "999");
-}
-
-// ============================================================================
-// Tests for std::optional
-// ============================================================================
-
-TEST_CASE("DocWrapper - asOptional present, missing, and null")
-{
-	std::string json =
-		R"({"name":"Alice","address":{"street":"123 Main St","city":"New York","zipCode":"10001"},"score":10})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
-
-	std::optional<Address> address = root["address"].asOptional<Address>();
-	REQUIRE(address.has_value());
-	CHECK(address->street == "123 Main St");
-	CHECK(address->city == "New York");
-	CHECK(address->zipCode == "10001");
-
-	std::optional<int> score = root["score"].asOptional<int>();
-	REQUIRE(score.has_value());
-	CHECK(*score == 10);
-
-	std::optional<std::string> name = root["name"].asOptional<std::string>();
-	REQUIRE(name.has_value());
-	CHECK(*name == "Alice");
-
-	CHECK_FALSE(root["missing"].asOptional<int>().has_value());
-	CHECK_FALSE(root["missing"].asOptional<Address>().has_value());
-
-	DocWrapper nullDoc(R"({"score":null,"address":null})");
-	ValueWrapper nullRoot = nullDoc;
-	CHECK_FALSE(nullRoot["score"].asOptional<int>().has_value());
-	CHECK_FALSE(nullRoot["address"].asOptional<Address>().has_value());
-}
-
-TEST_CASE("DocWrapper - missing or null without asOptional throws")
-{
-	DocWrapper doc(R"({"name":"Alice"})");
-	ValueWrapper root = doc;
-
-	CHECK_THROWS_AS(static_cast<Address>(root["address"]), std::logic_error);
-	CHECK_THROWS_AS(static_cast<std::string>(root["address"]), std::logic_error);
-
-	DocWrapper nullDoc(R"({"address":null})");
-	ValueWrapper nullRoot = nullDoc;
-	CHECK_THROWS_AS(static_cast<Address>(nullRoot["address"]), std::logic_error);
-	CHECK_THROWS_AS(static_cast<std::string>(nullRoot["address"]), std::logic_error);
-}
-
-TEST_CASE("MutDocWrapper - set std::optional omits empty and writes present")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-
-	root.set("score", std::optional<int>{7}, "emptyScore", std::optional<int>{}, "address",
-		std::optional<Address>{Address{"1 Oak", "Boston", "02101"}}, "noAddress", std::optional<Address>{});
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	CHECK(static_cast<int>(readRoot["score"]) == 7);
-	CHECK_FALSE(readRoot.hasKey("emptyScore"));
-	CHECK(static_cast<std::string>(readRoot["address"]["city"]) == "Boston");
-	CHECK_FALSE(readRoot.hasKey("noAddress"));
-}
-
-TEST_CASE("Assignment - std::optional present and empty")
-{
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-	root = std::optional<int>{42};
-	CHECK(root.toString() == "42");
-	root = std::optional<int>{};
-	CHECK(root.toString() == "null");
-	root = std::optional<Address>{Address{"1 Oak", "Boston", "02101"}};
-	CHECK(root.toString() == "{\"street\":\"1 Oak\",\"city\":\"Boston\",\"zipCode\":\"02101\"}");
-	root = std::optional<Address>{};
-	CHECK(root.toString() == "null");
-}
-
-TEST_CASE("Roundtrip - Custom type with std::optional fields")
-{
-	PersonWithOptional original{"Alice", Address{"456 Oak Ave", "Boston", "02101"}, 99};
-
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-	root = original;
-
-	DocWrapper doc(mutDoc.toString());
-	PersonWithOptional result = static_cast<ValueWrapper>(doc);
-	CHECK(result == original);
-
-	PersonWithOptional noOptionals{"Bob", std::nullopt, std::nullopt};
-	MutDocWrapper mutDoc2;
-	MutValueWrapper root2 = mutDoc2;
-	root2 = noOptionals;
-
-	std::string json = mutDoc2.toString();
-	CHECK(json.find("address") == std::string::npos);
-	CHECK(json.find("score") == std::string::npos);
-
-	DocWrapper doc2(json);
-	PersonWithOptional result2 = static_cast<ValueWrapper>(doc2);
-	CHECK(result2 == noOptionals);
-}
-
-// ============================================================================
-// Integration Tests
-// ============================================================================
-
-TEST_CASE("Roundtrip - Write then read")
-{
-	// Write JSON
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-	root.set("name", "Charlie", "age", 35, "active", true);
-
-	std::string json = mutDoc.toString();
-
-	// Read JSON
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	CHECK(static_cast<std::string>(readRoot["name"]) == "Charlie");
-	CHECK(static_cast<int>(readRoot["age"]) == 35);
-	CHECK(static_cast<bool>(readRoot["active"]) == true);
-}
-
-TEST_CASE("Roundtrip - Custom types")
-{
-	// Write
-	Address addr{"456 Oak Ave", "Boston", "02101"};
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-	toJson(root, addr);
-
-	std::string json = mutDoc.toString();
-
-	// Read
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-	Address result = readRoot;
-
-	CHECK(result == addr);
-}
-
-TEST_CASE("Roundtrip - Map")
-{
-	std::map<std::string, std::string> original = {{"department", "Engineering"}, {"team", "Platform"}};
-
-	MutDocWrapper mutDoc;
-	MutValueWrapper root = mutDoc;
-	root.set("metadata", original);
-
-	std::string json = mutDoc.toString();
-	DocWrapper doc(json);
-	ValueWrapper readRoot = doc;
-
-	std::map<std::string, std::string> result = readRoot["metadata"];
-	CHECK(result == original);
-}
-
-TEST_CASE("Complex nested structure")
-{
-	std::string json = R"({
-		"users": [
-			{"name": "Alice", "age": 25},
-			{"name": "Bob", "age": 30}
-		],
-		"metadata": {
-			"count": 2,
-			"active": true
-		}
-	})";
-
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
-
-	// Access nested array
-	CHECK(static_cast<std::string>(root["users"][0]["name"]) == "Alice");
-	CHECK(static_cast<int>(root["users"][0]["age"]) == 25);
-	CHECK(static_cast<std::string>(root["users"][1]["name"]) == "Bob");
-	CHECK(static_cast<int>(root["users"][1]["age"]) == 30);
-
-	// Access nested object
-	CHECK(static_cast<int>(root["metadata"]["count"]) == 2);
-	CHECK(static_cast<bool>(root["metadata"]["active"]) == true);
-}
-
-TEST_CASE("Large integers")
-{
-	std::string json = R"({"bigInt":9223372036854775807,"smallInt":-9223372036854775807})";
-	DocWrapper doc(json);
-	ValueWrapper root = doc;
-
-	CHECK(static_cast<int64_t>(root["bigInt"]) == 9223372036854775807LL);
-	CHECK(static_cast<int64_t>(root["smallInt"]) == -9223372036854775807LL);
+TEST_CASE("yyjson pointers refer to the owned mutable document") {
+    const auto root = jw::object().set("a", 1);
+    CHECK(root.mut_val() != nullptr);
+    CHECK(root.mut_doc() != nullptr);
+    CHECK(yyjson_mut_is_obj(root.mut_val()));
+    CHECK(yyjson_mut_doc_get_root(root.mut_doc()) == root.mut_val());
 }
