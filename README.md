@@ -49,42 +49,42 @@ Content of [example.cpp](example.cpp)
 #include <string>
 #include <vector>
 
-struct Address {
-    std::string city;
-    int zip;
+struct Address
+{
+	std::string city;
+	int zip;
 };
 
 JW_JSON_FIELDS(Address, city, zip)
 
-struct User {
-    std::string name;
-    int age;
-    std::vector<std::string> tags;
-    Address address;
+struct User
+{
+	std::string name;
+	int age;
+	std::vector<std::string> tags;
+	Address address;
 };
 
 JW_JSON_FIELDS(User, name, age, tags, address)
 
-int main() {
-    User original{
-        "Alice",
-        30,
-        {"cpp", "yyjson"},
-        {"Singapore", 123456}
-    };
+int main()
+{
+	User original{"Alice", 30, {"cpp", "yyjson"}, {"Singapore", 123456}};
 
-    auto value = jw::to_value(original);
-    std::string text = jw::stringify(value, true);
+	// C++ struct -> JSON
+	auto value = jw::to_value(original);
+	std::string text = jw::stringify(value, true);
 
-    std::cout << text << "\n\n";
+	std::cout << text << "\n\n";
 
-    auto parsed = jw::parse(text);
-    User copy = jw::from_json<User>(parsed);
+	// JSON -> C++ struct
+	auto parsed = jw::parse(text);
+	User copy = jw::from_json<User>(parsed);
 
-    std::cout << copy.name << '\n';
-    std::cout << copy.age << '\n';
-    std::cout << copy.address.city << '\n';
-    std::cout << copy.tags.at(0) << '\n';
+	std::cout << copy.name << '\n';
+	std::cout << copy.age << '\n';
+	std::cout << copy.address.city << '\n';
+	std::cout << copy.tags.at(0) << '\n';
 }
 ```
 
@@ -142,14 +142,14 @@ std::optional<int> maybeAge = root.try_get<int>("age");
 std::optional<int> score = root.get<std::optional<int>>("score");
 ```
 
-Parse comments and trailing commas with `jw::read_flag`:
+Parse comments and trailing commas with `jw::e_read_flag`:
 
 ```cpp
 jw::Value relaxed = jw::parse(
-    text, jw::read_flag::allow_comments_and_trailing_commas);
+    text, jw::e_read_flag::allow_comments_and_trailing_commas);
 ```
 
-`read_flag` also has `allow_comments` and `allow_trailing_commas`.
+`e_read_flag` also has `allow_comments` and `allow_trailing_commas`.
 
 ### Writing JSON
 
@@ -167,7 +167,7 @@ root.set("nickname", std::optional<std::string>{});
 
 std::string compact = root.dump();
 std::string pretty = root.dump(true); // 4 spaces
-std::string twoSpaces = root.dump(jw::write_flag::pretty_two_spaces);
+std::string twoSpaces = root.dump(jw::e_write_flag::pretty_two_spaces);
 ```
 
 `jw::stringify` is the same as `dump`. `set` replaces an existing key.

@@ -30,7 +30,7 @@ SystemHeaders: false
 FormatStyle: file
 CheckOptions:
   - key: readability-identifier-naming.VariableCase
-    value: camelBack
+    value: lower_case
   - key: readability-identifier-naming.StaticConstantCase
     value: UPPER_CASE
   - key: readability-identifier-naming.GlobalConstantCase
@@ -38,19 +38,21 @@ CheckOptions:
   - key: readability-identifier-naming.MacroDefinitionCase
     value: UPPER_CASE
   - key: readability-identifier-naming.FunctionCase
-    value: camelBack
+    value: lower_case
   - key: readability-identifier-naming.MemberCase
-    value: camelBack
+    value: lower_case
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
   - key: readability-identifier-naming.EnumCase
-    value: CamelCase
+    value: lower_case
   - key: readability-identifier-naming.EnumPrefix
-    value: E
+    value: e_
   - key: readability-identifier-naming.EnumConstantCase
-    value: CamelCase
+    value: lower_case
   - key: readability-identifier-naming.NamespaceCase
     value: lower_case
   - key: readability-identifier-naming.TypeAliasCase
-    value: CamelCase
+    value: lower_case
   - key: readability-function-cognitive-complexity.Threshold
     value: 25
   - key: readability-function-cognitive-complexity.IgnoreMacros
