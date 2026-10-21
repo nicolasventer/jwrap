@@ -2,7 +2,7 @@
 
 ## Description
 
-jwrap is a **C++ library** that lets you **read and write JSON** and convert between JSON and your own types. It wraps [yyjson](https://github.com/ibireme/yyjson) (version: 21st May 2026, commit: 6945ccb).
+jwrap is a **C++ library** that lets you **read and write JSON** and convert between JSON and your own types. It wraps [yyjson](https://github.com/ibireme/yyjson) (version: 19th October 2026, commit: 556bf1c).
 
 ## Features
 
