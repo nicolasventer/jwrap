@@ -31,6 +31,49 @@ struct Resident
 
 JW_JSON_FIELDS(Resident, name, city, tags)
 
+enum class Status
+{
+	Ok,
+	Error,
+	Hidden,
+};
+
+JW_JSON_ENUM(Status, Ok, Error)
+
+enum Color
+{
+	Red,
+	Green,
+	Blue,
+};
+
+JW_JSON_ENUM(Color, Red, Green, Blue)
+
+enum class Only
+{
+	Yes,
+};
+
+JW_JSON_ENUM(Only, Yes)
+
+enum class Many
+{
+	E0, E1, E2, E3, E4, E5, E6, E7, E8, E9, E10, E11, E12, E13, E14, E15,
+	E16, E17, E18, E19, E20, E21, E22, E23, E24, E25, E26, E27, E28, E29, E30, E31,
+};
+
+JW_JSON_ENUM(Many, E0, E1, E2, E3, E4, E5, E6, E7, E8, E9, E10, E11, E12, E13, E14, E15, E16, E17, E18, E19, E20, E21,
+	E22, E23, E24, E25, E26, E27, E28, E29, E30, E31)
+
+struct Task
+{
+	Status status;
+	std::optional<Status> note;
+	std::vector<Color> colors;
+};
+
+JW_JSON_FIELDS(Task, status, note, colors)
+
 using StringMap = std::map<std::string, int>;
 using StringPairs = std::vector<std::pair<std::string, int>>;
 using IntMap = std::map<int, int>;
@@ -208,6 +251,44 @@ TEST_CASE("nested structs registered with JW_JSON_FIELDS")
 	const auto null_city = jw::parse(R"({"name":"C","city":null,"tags":[]})");
 	CHECK_FALSE(jw::from_json<Resident>(null_city).city.has_value());
 	CHECK_THROWS_AS(jw::parse(R"({"tags":[]})").get<Resident>(), jw::missing_key);
+}
+
+TEST_CASE("enums registered with JW_JSON_ENUM read and write as strings")
+{
+	CHECK(jw::to_value(Status::Ok).dump() == "\"Ok\"");
+	CHECK(jw::parse("\"Ok\"").get<Status>() == Status::Ok);
+	CHECK(jw::to_value(Color::Green).dump() == "\"Green\"");
+	CHECK(jw::parse("\"Blue\"").get<Color>() == Color::Blue);
+	CHECK(jw::to_value(Only::Yes).dump() == "\"Yes\"");
+	CHECK(jw::parse("\"E0\"").get<Many>() == Many::E0);
+	CHECK(jw::parse("\"E31\"").get<Many>() == Many::E31);
+	CHECK(jw::to_value(Many::E31).dump() == "\"E31\"");
+
+	CHECK_THROWS_AS(jw::parse("1").get<Status>(), jw::type_error);
+	CHECK_THROWS_AS(jw::parse("\"Nope\"").get<Status>(), jw::type_error);
+	CHECK_THROWS_AS(jw::to_value(Status::Hidden), jw::type_error);
+
+	const Task original{Status::Error, Status::Ok, {Color::Red, Color::Blue}};
+	const auto value = jw::to_value(original);
+	CHECK(value.dump() == R"({"status":"Error","note":"Ok","colors":["Red","Blue"]})");
+
+	const Task copy = jw::from_json<Task>(value);
+	CHECK(copy.status == Status::Error);
+	REQUIRE(copy.note.has_value());
+	CHECK(*copy.note == Status::Ok);
+	CHECK(copy.colors == std::vector<Color>{Color::Red, Color::Blue});
+
+	const Task without_note{Status::Ok, std::nullopt, {}};
+	const std::string dumped = jw::to_value(without_note).dump();
+	CHECK(dumped == R"({"status":"Ok","colors":[]})");
+
+	const Task read = jw::from_json<Task>(jw::parse(dumped));
+	CHECK(read.status == Status::Ok);
+	CHECK_FALSE(read.note.has_value());
+	CHECK(read.colors.empty());
+
+	const auto null_note = jw::parse(R"({"status":"Ok","note":null,"colors":[]})");
+	CHECK_FALSE(jw::from_json<Task>(null_note).note.has_value());
 }
 
 TEST_CASE("yyjson pointers refer to the owned mutable document")

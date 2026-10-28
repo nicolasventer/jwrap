@@ -116,6 +116,8 @@ namespace jw
 
 	template <class T> struct StructTraits;
 
+	template <class T> struct EnumTraits;
+
 	template <class T> Value to_value(const T& value);
 
 	template <class T> T from_json(const Value& value);
@@ -434,7 +436,7 @@ namespace jw
 	{
 		static_assert(!std::is_same_v<T, T>,
 			"No jw::Converter available for this type. "
-			"Use JW_JSON_FIELDS or define a Converter specialization.");
+			"Use JW_JSON_FIELDS, JW_JSON_ENUM, or define a Converter specialization.");
 	};
 
 	// Strings
@@ -801,6 +803,14 @@ namespace jw
 	{
 	};
 
+	template <class T, class = void> struct has_enum_traits : std::false_type
+	{
+	};
+
+	template <class T> struct has_enum_traits<T, std::void_t<decltype(EnumTraits<T>::entries())>> : std::true_type
+	{
+	};
+
 	// Encode a registered struct.
 	template <class T, class Tuple, std::size_t... I>
 	Value encode_struct_fields(const T& object, const Tuple& fields, std::index_sequence<I...> /* indices */)
@@ -846,6 +856,35 @@ namespace jw
 			constexpr std::size_t count = std::tuple_size_v<decltype(StructTraits<T>::fields())>;
 
 			return decode_struct_fields<T>(value, StructTraits<T>::fields(), std::make_index_sequence<count>{});
+		}
+	};
+
+	// Registered enum converter. Values are JSON strings.
+	template <class T> struct Converter<T, std::enable_if_t<has_enum_traits<T>::value>>
+	{
+
+		static Value encode(T value)
+		{
+			for (const auto& entry : EnumTraits<T>::entries())
+			{
+				if (entry.first == value) return Converter<std::string>::encode(entry.second);
+			}
+
+			throw type_error("Unknown enum value");
+		}
+
+		static T decode(const Value& value)
+		{
+			if (!value.is_string()) throw type_error("Expected JSON string for enum");
+
+			const std::string text = Converter<std::string>::decode(value);
+
+			for (const auto& entry : EnumTraits<T>::entries())
+			{
+				if (text == entry.second) return entry.first;
+			}
+
+			throw type_error("Unknown enum name");
 		}
 	};
 
@@ -895,4 +934,93 @@ namespace jw
 		{                                                                                                   \
 			static constexpr auto fields() { return std::make_tuple(JW_DETAIL_FIELDS(TYPE, __VA_ARGS__)); } \
 		};                                                                                                  \
+	}
+
+// ============================================================
+// JW_JSON_ENUM macro (up to 32 enumerators)
+// Invoke at global namespace scope.
+// ============================================================
+
+#define JW_DETAIL_ENUM(TYPE, NAME) std::pair<TYPE, const char*>{TYPE::NAME, #NAME}
+
+#define JW_DETAIL_ENUMS_1(T, a) JW_DETAIL_ENUM(T, a)
+#define JW_DETAIL_ENUMS_2(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_1(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_3(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_2(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_4(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_3(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_5(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_4(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_6(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_5(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_7(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_6(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_8(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_7(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_9(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_8(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_10(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_9(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_11(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_10(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_12(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_11(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_13(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_12(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_14(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_13(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_15(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_14(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_16(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_15(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_17(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_16(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_18(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_17(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_19(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_18(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_20(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_19(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_21(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_20(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_22(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_21(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_23(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_22(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_24(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_23(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_25(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_24(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_26(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_25(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_27(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_26(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_28(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_27(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_29(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_28(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_30(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_29(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_31(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_30(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_32(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_31(T, __VA_ARGS__)
+
+#define JW_DETAIL_ENUM_GET(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, \
+	_17, _18, _19, _20, _21, _22, _23, _24, _25, _26, _27, _28, _29, _30, _31, _32, NAME, ...)    \
+	NAME
+
+#define JW_DETAIL_ENUMS(T, ...)     \
+	JW_DETAIL_ENUM_GET(__VA_ARGS__, \
+		JW_DETAIL_ENUMS_32,         \
+		JW_DETAIL_ENUMS_31,         \
+		JW_DETAIL_ENUMS_30,         \
+		JW_DETAIL_ENUMS_29,         \
+		JW_DETAIL_ENUMS_28,         \
+		JW_DETAIL_ENUMS_27,         \
+		JW_DETAIL_ENUMS_26,         \
+		JW_DETAIL_ENUMS_25,         \
+		JW_DETAIL_ENUMS_24,         \
+		JW_DETAIL_ENUMS_23,         \
+		JW_DETAIL_ENUMS_22,         \
+		JW_DETAIL_ENUMS_21,         \
+		JW_DETAIL_ENUMS_20,         \
+		JW_DETAIL_ENUMS_19,         \
+		JW_DETAIL_ENUMS_18,         \
+		JW_DETAIL_ENUMS_17,         \
+		JW_DETAIL_ENUMS_16,         \
+		JW_DETAIL_ENUMS_15,         \
+		JW_DETAIL_ENUMS_14,         \
+		JW_DETAIL_ENUMS_13,         \
+		JW_DETAIL_ENUMS_12,         \
+		JW_DETAIL_ENUMS_11,         \
+		JW_DETAIL_ENUMS_10,         \
+		JW_DETAIL_ENUMS_9,          \
+		JW_DETAIL_ENUMS_8,          \
+		JW_DETAIL_ENUMS_7,          \
+		JW_DETAIL_ENUMS_6,          \
+		JW_DETAIL_ENUMS_5,          \
+		JW_DETAIL_ENUMS_4,          \
+		JW_DETAIL_ENUMS_3,          \
+		JW_DETAIL_ENUMS_2,          \
+		JW_DETAIL_ENUMS_1,          \
+		extra)(T, __VA_ARGS__)
+
+#define JW_JSON_ENUM(TYPE, ...)                                                                        \
+	namespace jw                                                                                       \
+	{                                                                                                  \
+		template <> struct EnumTraits<TYPE>                                                            \
+		{                                                                                              \
+			static constexpr auto entries() { return std::array{JW_DETAIL_ENUMS(TYPE, __VA_ARGS__)}; } \
+		};                                                                                             \
 	}

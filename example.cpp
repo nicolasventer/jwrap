@@ -12,19 +12,28 @@ struct Address
 
 JW_JSON_FIELDS(Address, city, zip)
 
+enum class Role
+{
+	Admin,
+	Member,
+};
+
+JW_JSON_ENUM(Role, Admin, Member)
+
 struct User
 {
 	std::string name;
 	int age;
+	Role role;
 	std::vector<std::string> tags;
 	Address address;
 };
 
-JW_JSON_FIELDS(User, name, age, tags, address)
+JW_JSON_FIELDS(User, name, age, role, tags, address)
 
 int main()
 {
-	User original{"Alice", 30, {"cpp", "yyjson"}, {"Singapore", 123456}};
+	User original{"Alice", 30, Role::Member, {"cpp", "yyjson"}, {"Singapore", 123456}};
 
 	// C++ struct -> JSON
 	auto value = jw::to_value(original);
@@ -38,6 +47,7 @@ int main()
 
 	std::cout << copy.name << '\n';
 	std::cout << copy.age << '\n';
+	std::cout << (copy.role == Role::Admin ? "Admin" : "Member") << '\n';
 	std::cout << copy.address.city << '\n';
 	std::cout << copy.tags.at(0) << '\n';
 }

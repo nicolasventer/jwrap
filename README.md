@@ -11,6 +11,7 @@ jwrap is a **C++ library** that lets you **read and write JSON** and convert bet
 - `std::optional`: a missing key or JSON null reads as `nullopt`, and an empty optional is omitted from an object
 - `std::vector`, `std::array`, C arrays, `std::map`, and `std::vector<std::pair>`
 - Struct fields registered with `JW_JSON_FIELDS` (up to 8 fields), or a custom `jw::Converter`
+- Enums registered with `JW_JSON_ENUM` (up to 32 enumerators), read and written as JSON strings
 - Optional parse flags for comments and trailing commas
 - Compact output, 4-space pretty print, and 2-space pretty print
 - Access to the underlying `yyjson_mut_val` and `yyjson_mut_doc`
@@ -57,19 +58,28 @@ struct Address
 
 JW_JSON_FIELDS(Address, city, zip)
 
+enum class Role
+{
+	Admin,
+	Member,
+};
+
+JW_JSON_ENUM(Role, Admin, Member)
+
 struct User
 {
 	std::string name;
 	int age;
+	Role role;
 	std::vector<std::string> tags;
 	Address address;
 };
 
-JW_JSON_FIELDS(User, name, age, tags, address)
+JW_JSON_FIELDS(User, name, age, role, tags, address)
 
 int main()
 {
-	User original{"Alice", 30, {"cpp", "yyjson"}, {"Singapore", 123456}};
+	User original{"Alice", 30, Role::Member, {"cpp", "yyjson"}, {"Singapore", 123456}};
 
 	// C++ struct -> JSON
 	auto value = jw::to_value(original);
@@ -83,6 +93,7 @@ int main()
 
 	std::cout << copy.name << '\n';
 	std::cout << copy.age << '\n';
+	std::cout << (copy.role == Role::Admin ? "Admin" : "Member") << '\n';
 	std::cout << copy.address.city << '\n';
 	std::cout << copy.tags.at(0) << '\n';
 }
@@ -94,6 +105,7 @@ int main()
 {
     "name": "Alice",
     "age": 30,
+    "role": "Member",
     "tags": [
         "cpp",
         "yyjson"
@@ -106,6 +118,7 @@ int main()
 
 Alice
 30
+Member
 Singapore
 cpp
 ```
@@ -205,7 +218,17 @@ struct Address {
 JW_JSON_FIELDS(Address, city, zip)
 ```
 
-For a type the macro does not cover, specialize `jw::Converter<T>` with `encode` and `decode`.
+`JW_JSON_ENUM` is invoked at global scope and accepts up to 32 enumerators. Each value is read and written as a JSON string of the enumerator name. A JSON number, an unknown name, or an unlisted enumerator throws `jw::type_error`.
+
+```cpp
+enum class Status { Ok, Error };
+
+JW_JSON_ENUM(Status, Ok, Error)
+```
+
+Specialize `jw::EnumTraits<T>` for custom names or more than 32 enumerators. `entries()` returns pairs of enumerator and name. The first match is used when two enumerators share a value.
+
+For a type these macros do not cover, specialize `jw::Converter<T>` with `encode` and `decode`.
 
 ### Errors and yyjson handles
 
