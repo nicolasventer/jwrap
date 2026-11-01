@@ -230,6 +230,88 @@ Specialize `jw::EnumTraits<T>` for custom names or more than 32 enumerators. `en
 
 For a type these macros do not cover, specialize `jw::Converter<T>` with `encode` and `decode`.
 
+### Custom converter
+
+This is how to create a custom converter. `Point` is stored as `[x, y]` through `jw::Converter<Point>`.
+
+Content of [example2.cpp](example2.cpp)
+
+```cpp
+#include "jwrap/jwrap.hpp"
+#include "jwrap/yyjson/yyjson.c"
+#include <iostream>
+#include <string>
+
+struct Point
+{
+	int x;
+	int y;
+};
+
+namespace jw
+{
+	template <> struct Converter<Point>
+	{
+		static Value encode(const Point& point)
+		{
+			Value result = array();
+			result.push(point.x).push(point.y);
+			return result;
+		}
+
+		static Point decode(const Value& value)
+		{
+			if (!value.is_array() || value.size() != 2) throw type_error("Expected JSON array [x, y]");
+
+			return Point{value.at<int>(0), value.at<int>(1)};
+		}
+	};
+}
+
+struct Marker
+{
+	std::string name;
+	Point position;
+};
+
+JW_JSON_FIELDS(Marker, name, position)
+
+int main()
+{
+	Marker original{"origin", {1, 2}};
+
+	// C++ struct -> JSON
+	auto value = jw::to_value(original);
+	std::string text = jw::stringify(value, true);
+
+	std::cout << text << "\n\n";
+
+	// JSON -> C++ struct
+	auto parsed = jw::parse(text);
+	Marker copy = jw::from_json<Marker>(parsed);
+
+	std::cout << copy.name << '\n';
+	std::cout << copy.position.x << '\n';
+	std::cout << copy.position.y << '\n';
+}
+```
+
+**Output:**
+
+```
+{
+    "name": "origin",
+    "position": [
+        1,
+        2
+    ]
+}
+
+origin
+1
+2
+```
+
 ### Errors and yyjson handles
 
 `jw::parse_error`, `jw::type_error`, and `jw::missing_key` derive from `jw::error`. Number conversions throw `std::out_of_range` when the value does not fit. NaN and infinity cannot be encoded.
