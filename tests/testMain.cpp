@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 struct City
@@ -78,6 +79,80 @@ using StringMap = std::map<std::string, int>;
 using StringPairs = std::vector<std::pair<std::string, int>>;
 using IntMap = std::map<int, int>;
 using TwoInts = std::array<int, 2>;
+
+struct Circle
+{
+	double radius;
+};
+
+struct Rect
+{
+	double w;
+	double h;
+};
+
+JW_JSON_FIELDS(Circle, radius)
+JW_JSON_FIELDS(Rect, w, h)
+
+using Shape = std::variant<Circle, Rect>;
+
+JW_JSON_VARIANT_TAG(Shape, type, circle, rect)
+
+struct KeyCircle
+{
+	double radius;
+};
+
+struct KeyRect
+{
+	double w;
+	double h;
+};
+
+JW_JSON_FIELDS(KeyCircle, radius)
+JW_JSON_FIELDS(KeyRect, w, h)
+
+using ShapeKey = std::variant<KeyCircle, KeyRect>;
+
+JW_JSON_VARIANT_KEY(ShapeKey, circle, rect)
+
+using Setting = std::variant<int, std::string>;
+
+JW_JSON_VARIANT_KEY(Setting, number, text)
+
+using NumberOrCircle = std::variant<int, Circle>;
+
+JW_JSON_VARIANT_TAG(NumberOrCircle, type, number, circle)
+
+struct Drawing
+{
+	std::string name;
+	Shape shape;
+};
+
+JW_JSON_FIELDS(Drawing, name, shape)
+
+struct Lone
+{
+	int n;
+};
+
+JW_JSON_FIELDS(Lone, n)
+
+using LoneShape = std::variant<Lone>;
+
+JW_JSON_VARIANT_TAG(LoneShape, kind, lone)
+
+using Eight = std::variant<std::array<int, 1>,
+	std::array<int, 2>,
+	std::array<int, 3>,
+	std::array<int, 4>,
+	std::array<int, 5>,
+	std::array<int, 6>,
+	std::array<int, 7>,
+	std::array<int, 8>>;
+
+JW_JSON_VARIANT_KEY(Eight, a, b, c, d, e, f, g, h)
 
 TEST_CASE("parse errors and read flags")
 {
@@ -289,6 +364,90 @@ TEST_CASE("enums registered with JW_JSON_ENUM read and write as strings")
 
 	const auto null_note = jw::parse(R"({"status":"Ok","note":null,"colors":[]})");
 	CHECK_FALSE(jw::from_json<Task>(null_note).note.has_value());
+}
+
+TEST_CASE("variants registered with JW_JSON_VARIANT_TAG discriminate by field value")
+{
+	const Shape circle{Circle{0.5}};
+	const auto circle_value = jw::to_value(circle);
+	CHECK(circle_value.get<std::string>("type") == "circle");
+	CHECK(circle_value.get<double>("radius") == doctest::Approx(0.5));
+
+	const Shape circle_copy = jw::from_json<Shape>(circle_value);
+	REQUIRE(std::holds_alternative<Circle>(circle_copy));
+	CHECK(std::get<Circle>(circle_copy).radius == doctest::Approx(0.5));
+
+	const Shape from_text = jw::from_json<Shape>(jw::parse(R"({"type":"circle","radius":0.5})"));
+	REQUIRE(std::holds_alternative<Circle>(from_text));
+	CHECK(std::get<Circle>(from_text).radius == doctest::Approx(0.5));
+
+	const Shape rect = jw::from_json<Shape>(jw::parse(R"({"type":"rect","w":2,"h":3})"));
+	REQUIRE(std::holds_alternative<Rect>(rect));
+	CHECK(std::get<Rect>(rect).w == doctest::Approx(2));
+	CHECK(std::get<Rect>(rect).h == doctest::Approx(3));
+
+	const auto rect_value = jw::to_value(Shape{Rect{2, 3}});
+	CHECK(rect_value.get<std::string>("type") == "rect");
+	CHECK(rect_value.get<double>("w") == doctest::Approx(2));
+	CHECK(rect_value.get<double>("h") == doctest::Approx(3));
+	const Shape rect_copy = jw::from_json<Shape>(rect_value);
+	REQUIRE(std::holds_alternative<Rect>(rect_copy));
+	CHECK(std::get<Rect>(rect_copy).w == doctest::Approx(2));
+
+	const Drawing original{"badge", Circle{0.5}};
+	const Drawing drawing = jw::from_json<Drawing>(jw::to_value(original));
+	CHECK(drawing.name == "badge");
+	REQUIRE(std::holds_alternative<Circle>(drawing.shape));
+	CHECK(std::get<Circle>(drawing.shape).radius == doctest::Approx(0.5));
+
+	CHECK_THROWS_AS(jw::parse("[]").get<Shape>(), jw::type_error);
+	CHECK_THROWS_AS(jw::parse("{}").get<Shape>(), jw::missing_key);
+	CHECK_THROWS_AS(jw::parse(R"({"type":1,"radius":0.5})").get<Shape>(), jw::type_error);
+	CHECK_THROWS_AS(jw::parse(R"({"type":"triangle","radius":0.5})").get<Shape>(), jw::type_error);
+	CHECK_THROWS_AS(jw::to_value(NumberOrCircle{4}), jw::type_error);
+
+	const NumberOrCircle tagged_circle{Circle{1.5}};
+	const auto tagged = jw::to_value(tagged_circle);
+	CHECK(tagged.get<std::string>("type") == "circle");
+	CHECK(std::get<Circle>(jw::from_json<NumberOrCircle>(tagged)).radius == doctest::Approx(1.5));
+
+	const LoneShape lone = jw::from_json<LoneShape>(jw::parse(R"({"kind":"lone","n":1})"));
+	CHECK(std::get<Lone>(lone).n == 1);
+	CHECK(jw::to_value(lone).get<std::string>("kind") == "lone");
+}
+
+TEST_CASE("variants registered with JW_JSON_VARIANT_KEY discriminate by key presence")
+{
+	const ShapeKey circle{KeyCircle{0.5}};
+	const auto circle_value = jw::to_value(circle);
+	CHECK(circle_value.dump() == R"({"circle":{"radius":0.5}})");
+	const ShapeKey circle_copy = jw::from_json<ShapeKey>(circle_value);
+	REQUIRE(std::holds_alternative<KeyCircle>(circle_copy));
+	CHECK(std::get<KeyCircle>(circle_copy).radius == doctest::Approx(0.5));
+
+	const auto rect_value = jw::to_value(ShapeKey{KeyRect{2, 3}});
+	const ShapeKey rect_copy = jw::from_json<ShapeKey>(rect_value);
+	REQUIRE(std::holds_alternative<KeyRect>(rect_copy));
+	CHECK(std::get<KeyRect>(rect_copy).w == doctest::Approx(2));
+	CHECK(std::get<KeyRect>(rect_copy).h == doctest::Approx(3));
+	CHECK(rect_value.size() == 1);
+	CHECK(rect_value["rect"].get<double>("w") == doctest::Approx(2));
+
+	CHECK(jw::to_value(Setting{7}).dump() == R"({"number":7})");
+	CHECK(jw::to_value(Setting{std::string{"hi"}}).dump() == R"({"text":"hi"})");
+	CHECK(std::get<int>(jw::parse(R"({"number":7})").get<Setting>()) == 7);
+	CHECK(std::get<std::string>(jw::parse(R"({"text":"hi"})").get<Setting>()) == "hi");
+
+	CHECK_THROWS_AS(jw::parse("1").get<Setting>(), jw::type_error);
+	CHECK_THROWS_AS(jw::parse("{}").get<ShapeKey>(), jw::type_error);
+	CHECK_THROWS_AS(jw::parse(R"({"circle":{"radius":1},"rect":{"w":2,"h":3}})").get<ShapeKey>(), jw::type_error);
+	CHECK_THROWS_AS(jw::parse(R"({"nope":1})").get<Setting>(), jw::type_error);
+
+	const Eight eight{std::array<int, 8>{1, 2, 3, 4, 5, 6, 7, 8}};
+	const auto eight_value = jw::to_value(eight);
+	CHECK(eight_value["h"].at<int>(7) == 8);
+	CHECK(std::get<7>(jw::from_json<Eight>(eight_value))[7] == 8);
+	CHECK(jw::to_value(Eight{std::array<int, 1>{9}}).dump() == R"({"a":[9]})");
 }
 
 TEST_CASE("yyjson pointers refer to the owned mutable document")

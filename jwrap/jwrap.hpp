@@ -16,9 +16,11 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace jw
@@ -117,6 +119,8 @@ namespace jw
 	template <class T> struct StructTraits;
 
 	template <class T> struct EnumTraits;
+
+	template <class T> struct VariantTraits;
 
 	template <class T> Value to_value(const T& value);
 
@@ -436,7 +440,8 @@ namespace jw
 	{
 		static_assert(!std::is_same_v<T, T>,
 			"No jw::Converter available for this type. "
-			"Use JW_JSON_FIELDS, JW_JSON_ENUM, or define a Converter specialization.");
+			"Use JW_JSON_FIELDS, JW_JSON_ENUM, JW_JSON_VARIANT_TAG, JW_JSON_VARIANT_KEY, "
+			"or define a Converter specialization.");
 	};
 
 	// Strings
@@ -811,6 +816,22 @@ namespace jw
 	{
 	};
 
+	template <class T, class = void> struct has_variant_traits : std::false_type
+	{
+	};
+
+	template <class T> struct has_variant_traits<T, std::void_t<decltype(VariantTraits<T>::names())>> : std::true_type
+	{
+	};
+
+	template <class T, class = void> struct variant_has_tag : std::false_type
+	{
+	};
+
+	template <class T> struct variant_has_tag<T, std::void_t<decltype(VariantTraits<T>::tag())>> : std::true_type
+	{
+	};
+
 	// Encode a registered struct.
 	template <class T, class Tuple, std::size_t... I>
 	Value encode_struct_fields(const T& object, const Tuple& fields, std::index_sequence<I...> /* indices */)
@@ -888,6 +909,109 @@ namespace jw
 		}
 	};
 
+	namespace detail
+	{
+
+		template <class Names> constexpr bool variant_names_are_unique(const Names& names)
+		{
+			for (std::size_t i = 0; i < names.size(); ++i)
+			{
+				for (std::size_t j = i + 1; j < names.size(); ++j)
+				{
+					if (std::string_view(names[i]) == std::string_view(names[j])) return false;
+				}
+			}
+
+			return true;
+		}
+
+		// Match a tag field value to an alternative, in registration order.
+		template <class Variant, std::size_t I> Variant decode_variant_tag(const Value& value, const std::string& tag)
+		{
+			constexpr auto names = VariantTraits<Variant>::names();
+
+			if constexpr (I >= std::variant_size_v<Variant>)
+			{
+				throw type_error("Unknown variant tag");
+			}
+			else if (tag == names[I])
+			{
+				return Variant(std::in_place_index<I>, from_json<std::variant_alternative_t<I, Variant>>(value));
+			}
+			else
+			{
+				return decode_variant_tag<Variant, I + 1>(value, tag);
+			}
+		}
+
+		// Match the single object key to an alternative, in registration order.
+		template <class Variant, std::size_t I> Variant decode_variant_key(const Value& value)
+		{
+			constexpr auto names = VariantTraits<Variant>::names();
+
+			if constexpr (I >= std::variant_size_v<Variant>)
+			{
+				throw type_error("Unknown variant key");
+			}
+			else if (value.has_key(names[I]))
+			{
+				return Variant(std::in_place_index<I>, from_json<std::variant_alternative_t<I, Variant>>(value[names[I]]));
+			}
+			else
+			{
+				return decode_variant_key<Variant, I + 1>(value);
+			}
+		}
+
+	} // namespace detail
+
+	// Registered variant converter.
+	// Tag mode reads a discriminator field and decodes the same object.
+	// Key mode reads the value of the single object key.
+	template <class... Ts> struct Converter<std::variant<Ts...>, std::enable_if_t<has_variant_traits<std::variant<Ts...>>::value>>
+	{
+		using variant_type = std::variant<Ts...>;
+
+		static constexpr auto alternative_names = VariantTraits<variant_type>::names();
+
+		static_assert(alternative_names.size() == sizeof...(Ts), "JW_JSON_VARIANT name count must match the variant");
+		static_assert(detail::variant_names_are_unique(alternative_names), "JW_JSON_VARIANT names must be unique");
+
+		static Value encode(const variant_type& value)
+		{
+			if (value.valueless_by_exception()) throw type_error("Valueless variant");
+
+			Value payload = std::visit([](const auto& alternative) { return to_value(alternative); }, value);
+
+			if constexpr (variant_has_tag<variant_type>::value)
+			{
+				if (!payload.is_object()) throw type_error("Tagged variant alternative must be a JSON object");
+
+				payload.set(VariantTraits<variant_type>::tag(), alternative_names[value.index()]);
+				return payload;
+			}
+
+			Value result = Value::object();
+			result.set(alternative_names[value.index()], payload);
+			return result;
+		}
+
+		static variant_type decode(const Value& value)
+		{
+			if (!value.is_object()) throw type_error("Expected JSON object for variant");
+
+			if constexpr (variant_has_tag<variant_type>::value)
+			{
+				const std::string tag = value.get<std::string>(VariantTraits<variant_type>::tag());
+				return detail::decode_variant_tag<variant_type, 0>(value, tag);
+			}
+
+			if (value.size() != 1) throw type_error("Expected a single-key JSON object for variant");
+
+			return detail::decode_variant_key<variant_type, 0>(value);
+		}
+	};
+
 } // namespace jw
 
 // ============================================================
@@ -941,17 +1065,18 @@ namespace jw
 // Invoke at global namespace scope.
 // ============================================================
 
-#define JW_DETAIL_ENUM(TYPE, NAME) std::pair<TYPE, const char*>{TYPE::NAME, #NAME}
+#define JW_DETAIL_ENUM(TYPE, NAME)                     \
+	std::pair<TYPE, const char*> { TYPE::NAME, #NAME }
 
-#define JW_DETAIL_ENUMS_1(T, a) JW_DETAIL_ENUM(T, a)
-#define JW_DETAIL_ENUMS_2(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_1(T, __VA_ARGS__)
-#define JW_DETAIL_ENUMS_3(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_2(T, __VA_ARGS__)
-#define JW_DETAIL_ENUMS_4(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_3(T, __VA_ARGS__)
-#define JW_DETAIL_ENUMS_5(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_4(T, __VA_ARGS__)
-#define JW_DETAIL_ENUMS_6(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_5(T, __VA_ARGS__)
-#define JW_DETAIL_ENUMS_7(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_6(T, __VA_ARGS__)
-#define JW_DETAIL_ENUMS_8(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_7(T, __VA_ARGS__)
-#define JW_DETAIL_ENUMS_9(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_8(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_1(T, a)		  JW_DETAIL_ENUM(T, a)
+#define JW_DETAIL_ENUMS_2(T, a, ...)  JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_1(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_3(T, a, ...)  JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_2(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_4(T, a, ...)  JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_3(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_5(T, a, ...)  JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_4(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_6(T, a, ...)  JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_5(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_7(T, a, ...)  JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_6(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_8(T, a, ...)  JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_7(T, __VA_ARGS__)
+#define JW_DETAIL_ENUMS_9(T, a, ...)  JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_8(T, __VA_ARGS__)
 #define JW_DETAIL_ENUMS_10(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_9(T, __VA_ARGS__)
 #define JW_DETAIL_ENUMS_11(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_10(T, __VA_ARGS__)
 #define JW_DETAIL_ENUMS_12(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_11(T, __VA_ARGS__)
@@ -976,8 +1101,40 @@ namespace jw
 #define JW_DETAIL_ENUMS_31(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_30(T, __VA_ARGS__)
 #define JW_DETAIL_ENUMS_32(T, a, ...) JW_DETAIL_ENUM(T, a), JW_DETAIL_ENUMS_31(T, __VA_ARGS__)
 
-#define JW_DETAIL_ENUM_GET(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, _11, _12, _13, _14, _15, _16, \
-	_17, _18, _19, _20, _21, _22, _23, _24, _25, _26, _27, _28, _29, _30, _31, _32, NAME, ...)    \
+#define JW_DETAIL_ENUM_GET(_1, \
+	_2,                        \
+	_3,                        \
+	_4,                        \
+	_5,                        \
+	_6,                        \
+	_7,                        \
+	_8,                        \
+	_9,                        \
+	_10,                       \
+	_11,                       \
+	_12,                       \
+	_13,                       \
+	_14,                       \
+	_15,                       \
+	_16,                       \
+	_17,                       \
+	_18,                       \
+	_19,                       \
+	_20,                       \
+	_21,                       \
+	_22,                       \
+	_23,                       \
+	_24,                       \
+	_25,                       \
+	_26,                       \
+	_27,                       \
+	_28,                       \
+	_29,                       \
+	_30,                       \
+	_31,                       \
+	_32,                       \
+	NAME,                      \
+	...)                       \
 	NAME
 
 #define JW_DETAIL_ENUMS(T, ...)     \
@@ -1023,4 +1180,62 @@ namespace jw
 		{                                                                                              \
 			static constexpr auto entries() { return std::array{JW_DETAIL_ENUMS(TYPE, __VA_ARGS__)}; } \
 		};                                                                                             \
+	}
+
+// ============================================================
+// JW_JSON_VARIANT_TAG and JW_JSON_VARIANT_KEY (up to 8 names)
+// Invoke at global namespace scope.
+// The variant type must be a using-alias: a comma inside the
+// macro argument list would split std::variant<A, B>.
+// Names are JSON strings in alternative order.
+// ============================================================
+
+#define JW_DETAIL_VARIANT_NAMES_1(a)					  #a
+#define JW_DETAIL_VARIANT_NAMES_2(a, b)					  #a, #b
+#define JW_DETAIL_VARIANT_NAMES_3(a, b, c)				  #a, #b, #c
+#define JW_DETAIL_VARIANT_NAMES_4(a, b, c, d)			  #a, #b, #c, #d
+#define JW_DETAIL_VARIANT_NAMES_5(a, b, c, d, e)		  #a, #b, #c, #d, #e
+#define JW_DETAIL_VARIANT_NAMES_6(a, b, c, d, e, f)		  #a, #b, #c, #d, #e, #f
+#define JW_DETAIL_VARIANT_NAMES_7(a, b, c, d, e, f, g)	  #a, #b, #c, #d, #e, #f, #g
+#define JW_DETAIL_VARIANT_NAMES_8(a, b, c, d, e, f, g, h) #a, #b, #c, #d, #e, #f, #g, #h
+
+#define JW_DETAIL_VARIANT_NAMES(...) \
+	JW_DETAIL_GET_MACRO(__VA_ARGS__, \
+		JW_DETAIL_VARIANT_NAMES_8,   \
+		JW_DETAIL_VARIANT_NAMES_7,   \
+		JW_DETAIL_VARIANT_NAMES_6,   \
+		JW_DETAIL_VARIANT_NAMES_5,   \
+		JW_DETAIL_VARIANT_NAMES_4,   \
+		JW_DETAIL_VARIANT_NAMES_3,   \
+		JW_DETAIL_VARIANT_NAMES_2,   \
+		JW_DETAIL_VARIANT_NAMES_1,   \
+		extra)(__VA_ARGS__)
+
+#define JW_DETAIL_VARIANT_COUNT_I(_1, _2, _3, _4, _5, _6, _7, _8, N, ...) N
+
+#define JW_DETAIL_VARIANT_COUNT(...) JW_DETAIL_VARIANT_COUNT_I(__VA_ARGS__, 8, 7, 6, 5, 4, 3, 2, 1, extra)
+
+#define JW_JSON_VARIANT_TAG(TYPE, FIELD, ...)                                                                               \
+	namespace jw                                                                                                            \
+	{                                                                                                                       \
+		template <> struct VariantTraits<TYPE>                                                                              \
+		{                                                                                                                   \
+			static constexpr const char* tag() { return #FIELD; }                                                           \
+			static constexpr auto names()                                                                                   \
+			{                                                                                                               \
+				return std::array<const char*, JW_DETAIL_VARIANT_COUNT(__VA_ARGS__)>{JW_DETAIL_VARIANT_NAMES(__VA_ARGS__)}; \
+			}                                                                                                               \
+		};                                                                                                                  \
+	}
+
+#define JW_JSON_VARIANT_KEY(TYPE, ...)                                                                                      \
+	namespace jw                                                                                                            \
+	{                                                                                                                       \
+		template <> struct VariantTraits<TYPE>                                                                              \
+		{                                                                                                                   \
+			static constexpr auto names()                                                                                   \
+			{                                                                                                               \
+				return std::array<const char*, JW_DETAIL_VARIANT_COUNT(__VA_ARGS__)>{JW_DETAIL_VARIANT_NAMES(__VA_ARGS__)}; \
+			}                                                                                                               \
+		};                                                                                                                  \
 	}

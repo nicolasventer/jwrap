@@ -12,6 +12,7 @@ jwrap is a **C++ library** that lets you **read and write JSON** and convert bet
 - `std::vector`, `std::array`, C arrays, `std::map`, and `std::vector<std::pair>`
 - Struct fields registered with `JW_JSON_FIELDS` (up to 8 fields), or a custom `jw::Converter`
 - Enums registered with `JW_JSON_ENUM` (up to 32 enumerators), read and written as JSON strings
+- `std::variant` registered with `JW_JSON_VARIANT_TAG` (a field value selects the alternative) or `JW_JSON_VARIANT_KEY` (a single key selects it), up to 8 alternatives
 - Optional parse flags for comments and trailing commas
 - Compact output, 4-space pretty print, and 2-space pretty print
 - Access to the underlying `yyjson_mut_val` and `yyjson_mut_doc`
@@ -227,6 +228,42 @@ JW_JSON_ENUM(Status, Ok, Error)
 ```
 
 Specialize `jw::EnumTraits<T>` for custom names or more than 32 enumerators. `entries()` returns pairs of enumerator and name. The first match is used when two enumerators share a value.
+
+`JW_JSON_VARIANT_TAG` and `JW_JSON_VARIANT_KEY` are invoked at global scope and accept up to 8 names. The variant needs a using-alias first: `std::variant<Circle, Rect>` contains a comma, so it cannot be a macro argument. Names follow the alternative order and are written as JSON strings. The registration belongs to the variant type, so a variant is registered with only one of the two macros. Two aliases of the same `std::variant` are the same type.
+
+`JW_JSON_VARIANT_TAG` selects the alternative from the value of a field. That same object is the payload, so each alternative must encode as a JSON object. Encode writes the alternative's fields, then the tag. A missing tag throws `jw::missing_key`. An unknown name, a tag that is not a string, a value that is not an object, or an alternative that does not encode as an object throws `jw::type_error`. The tag key should not also be a field of the alternative, because encode replaces that key with the tag.
+
+```cpp
+struct Circle {
+    double radius;
+};
+
+struct Rect {
+    double w;
+    double h;
+};
+
+JW_JSON_FIELDS(Circle, radius)
+JW_JSON_FIELDS(Rect, w, h)
+
+using Shape = std::variant<Circle, Rect>;
+
+JW_JSON_VARIANT_TAG(Shape, type, circle, rect)
+```
+
+`{"type": "circle", "radius": 0.5}` and `{"type": "rect", "w": 2, "h": 3}` both decode. The tag field may appear anywhere in the object.
+
+`JW_JSON_VARIANT_KEY` selects the alternative from which key is present. The object must contain exactly one key, and that key's value is the payload. The payload can be any convertible JSON value. Zero keys, extra keys, or an unknown key throws `jw::type_error`.
+
+```cpp
+using Setting = std::variant<int, std::string>;
+
+JW_JSON_VARIANT_KEY(Setting, number, text)
+```
+
+This reads and writes `{"number": 1}` and `{"text": "hi"}`. The same macro with `circle` and `rect` reads and writes `{"circle": {"radius": 0.5}}`.
+
+Specialize `jw::VariantTraits<T>` for more than 8 alternatives, or for a name that is not an identifier. `names()` returns the JSON names in alternative order. Tag mode also defines `tag()` as the discriminator field name. Key mode omits `tag()`.
 
 For a type these macros do not cover, specialize `jw::Converter<T>` with `encode` and `decode`.
 
