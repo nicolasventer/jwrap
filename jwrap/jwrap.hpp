@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <map>
 #include <memory>
@@ -126,7 +127,12 @@ namespace jw
 
 	template <class T> T from_json(const Value& value);
 
-	template <class T> Value schema();
+	namespace schema
+	{
+
+		template <class T> Value of();
+
+	} // namespace schema
 
 	// ============================================================
 	// Value
@@ -171,7 +177,7 @@ namespace jw
 
 		template <class T> friend T from_json(const Value& value);
 
-		template <class T> friend Value schema();
+		template <class T> friend Value schema::of();
 
 	public:
 		Value(const Value&) = default;
@@ -455,13 +461,6 @@ namespace jw
 
 		template <class T> void set_schema_title(Value& schema);
 
-		inline Value typed_schema(const char* type)
-		{
-			Value result = Value::object();
-			result.set("type", type);
-			return result;
-		}
-
 		template <class T, class Tuple, std::size_t... I>
 		Value schema_from_struct(const Tuple& fields, std::index_sequence<I...> /* indices */);
 
@@ -472,6 +471,195 @@ namespace jw
 		template <class Variant, std::size_t I> void append_variant_schemas(Value& branches);
 
 	} // namespace detail
+
+	namespace schema
+	{
+
+		struct field
+		{
+			const char* name = nullptr;
+			Value schema;
+			bool required = true;
+		};
+
+		inline Value string()
+		{
+			Value result = Value::object();
+			result.set("type", "string");
+			return result;
+		}
+
+		inline Value boolean()
+		{
+			Value result = Value::object();
+			result.set("type", "boolean");
+			return result;
+		}
+
+		inline Value integer()
+		{
+			Value result = Value::object();
+			result.set("type", "integer");
+			return result;
+		}
+
+		inline Value number()
+		{
+			Value result = Value::object();
+			result.set("type", "number");
+			return result;
+		}
+
+		inline Value null()
+		{
+			Value result = Value::object();
+			result.set("type", "null");
+			return result;
+		}
+
+		inline Value any() { return Value::object(); }
+
+		inline Value array(const Value& items,
+			std::optional<std::size_t> min_length = std::nullopt,
+			std::optional<std::size_t> max_length = std::nullopt)
+		{
+			Value result = Value::object();
+			result.set("type", "array");
+			result.set("items", items);
+
+			if (min_length.has_value()) result.set("minItems", *min_length);
+
+			if (max_length.has_value()) result.set("maxItems", *max_length);
+
+			return result;
+		}
+
+		inline Value map(const Value& value_schema)
+		{
+			Value result = Value::object();
+			result.set("type", "object");
+			result.set("additionalProperties", value_schema);
+			return result;
+		}
+
+		inline field required(const char* name, Value schema) { return field{name, std::move(schema), true}; }
+
+		inline field optional(const char* name, Value schema) { return field{name, std::move(schema), false}; }
+
+	} // namespace schema
+
+	namespace detail
+	{
+
+		template <class Range> Value object_schema(const Range& fields)
+		{
+			Value properties = Value::object();
+			Value required_names = Value::array();
+
+			for (const auto& item : fields)
+			{
+				properties.set(item.name, item.schema);
+
+				if (item.required) required_names.push(std::string(item.name));
+			}
+
+			Value result = Value::object();
+			result.set("type", "object");
+			result.set("properties", properties);
+
+			if (required_names.size() != 0) result.set("required", required_names);
+
+			return result;
+		}
+
+		template <class Range> Value string_enum(const Range& names)
+		{
+			Value result = schema::string();
+			Value values = Value::array();
+
+			for (const auto& name : names) values.push(std::string(name));
+
+			result.set("enum", values);
+			return result;
+		}
+
+		inline Value keyword_schema(const char* key, Value value)
+		{
+			Value result = Value::object();
+			result.set(key, std::move(value));
+			return result;
+		}
+
+	} // namespace detail
+
+	namespace schema
+	{
+
+		inline Value object(std::initializer_list<field> fields) { return detail::object_schema(fields); }
+
+		inline Value enumeration(std::initializer_list<const char*> names) { return detail::string_enum(names); }
+
+		inline Value any_of(std::initializer_list<Value> branches)
+		{
+			Value options = Value::array();
+
+			for (const Value& branch : branches) options.push(branch);
+
+			return detail::keyword_schema("anyOf", std::move(options));
+		}
+
+		inline Value one_of(std::initializer_list<Value> branches)
+		{
+			Value options = Value::array();
+
+			for (const Value& branch : branches) options.push(branch);
+
+			return detail::keyword_schema("oneOf", std::move(options));
+		}
+
+		inline Value all_of(std::initializer_list<Value> branches)
+		{
+			Value options = Value::array();
+
+			for (const Value& branch : branches) options.push(branch);
+
+			return detail::keyword_schema("allOf", std::move(options));
+		}
+
+		inline Value nullable(const Value& schema) { return any_of({schema, null()}); }
+
+		inline Value ref(const char* name)
+		{
+			std::string escaped;
+			escaped.reserve(std::strlen(name));
+
+			for (const char* cursor = name; *cursor != '\0'; ++cursor)
+			{
+				if (*cursor == '~') escaped += "~0";
+				else if (*cursor == '/') escaped += "~1";
+				else escaped += *cursor;
+			}
+
+			Value result = Value::object();
+			result.set("$ref", "#/$defs/" + escaped);
+			return result;
+		}
+
+		inline Value defs(Value schema, std::initializer_list<std::pair<const char*, Value>> definitions)
+		{
+			if (definitions.size() == 0) return schema;
+
+			if (!schema.is_object()) throw type_error("JSON schema must be an object");
+
+			Value body = Value::object();
+
+			for (const auto& entry : definitions) body.set(entry.first, entry.second);
+
+			schema.set("$defs", body);
+			return schema;
+		}
+
+	} // namespace schema
 
 	// Strings
 	template <> struct Converter<std::string>
@@ -495,7 +683,7 @@ namespace jw
 			return std::string(yyjson_mut_get_str(value.root_), yyjson_mut_get_len(value.root_));
 		}
 
-		static Value schema() { return detail::typed_schema("string"); }
+		static Value schema() { return schema::string(); }
 	};
 
 	// C string pointers
@@ -508,15 +696,7 @@ namespace jw
 			return Converter<std::string>::encode(std::string(value));
 		}
 
-		static Value schema()
-		{
-			Value result = Value::object();
-			Value options = Value::array();
-			options.push(detail::typed_schema("string"));
-			options.push(detail::typed_schema("null"));
-			result.set("anyOf", options);
-			return result;
-		}
+		static Value schema() { return schema::any_of({schema::string(), schema::null()}); }
 	};
 
 	// Booleans
@@ -540,7 +720,7 @@ namespace jw
 			return yyjson_mut_get_bool(value.root_);
 		}
 
-		static Value schema() { return detail::typed_schema("boolean"); }
+		static Value schema() { return schema::boolean(); }
 	};
 
 	// Integral types
@@ -625,7 +805,7 @@ namespace jw
 			return static_cast<T>(n);
 		}
 
-		static Value schema() { return detail::typed_schema("integer"); }
+		static Value schema() { return schema::integer(); }
 	};
 
 	// Floating-point types
@@ -660,7 +840,7 @@ namespace jw
 			return static_cast<T>(n);
 		}
 
-		static Value schema() { return detail::typed_schema("number"); }
+		static Value schema() { return schema::number(); }
 	};
 
 	// Null pointer -> JSON null
@@ -675,7 +855,7 @@ namespace jw
 			return nullptr;
 		}
 
-		static Value schema() { return detail::typed_schema("null"); }
+		static Value schema() { return schema::null(); }
 	};
 
 	// Value itself
@@ -686,7 +866,7 @@ namespace jw
 		static Value decode(const Value& value) { return value; }
 
 		// Any JSON instance.
-		static Value schema() { return Value::object(); }
+		static Value schema() { return schema::any(); }
 	};
 
 	// Vectors
@@ -713,13 +893,7 @@ namespace jw
 			return result;
 		}
 
-		static Value schema()
-		{
-			Value result = Value::object();
-			result.set("type", "array");
-			result.set("items", detail::schema_of<T>());
-			return result;
-		}
+		static Value schema() { return schema::array(detail::schema_of<T>()); }
 	};
 
 	// Optional values. Empty encodes as JSON null.
@@ -740,15 +914,7 @@ namespace jw
 			return from_json<T>(value);
 		}
 
-		static Value schema()
-		{
-			Value result = Value::object();
-			Value options = Value::array();
-			options.push(detail::schema_of<T>());
-			options.push(detail::typed_schema("null"));
-			result.set("anyOf", options);
-			return result;
-		}
+		static Value schema() { return schema::nullable(detail::schema_of<T>()); }
 	};
 
 	namespace detail
@@ -785,13 +951,7 @@ namespace jw
 			return result;
 		}
 
-		static Value schema()
-		{
-			Value result = Value::object();
-			result.set("type", "object");
-			result.set("additionalProperties", detail::schema_of<V>());
-			return result;
-		}
+		static Value schema() { return schema::map(detail::schema_of<V>()); }
 	};
 
 	template <class K, class V> struct Converter<std::vector<std::pair<K, V>>>
@@ -815,13 +975,7 @@ namespace jw
 			return result;
 		}
 
-		static Value schema()
-		{
-			Value result = Value::object();
-			result.set("type", "object");
-			result.set("additionalProperties", detail::schema_of<V>());
-			return result;
-		}
+		static Value schema() { return schema::map(detail::schema_of<V>()); }
 	};
 
 	template <class T, std::size_t N> struct Converter<std::array<T, N>>
@@ -846,15 +1000,7 @@ namespace jw
 			return result;
 		}
 
-		static Value schema()
-		{
-			Value result = Value::object();
-			result.set("type", "array");
-			result.set("items", detail::schema_of<T>());
-			result.set("minItems", N);
-			result.set("maxItems", N);
-			return result;
-		}
+		static Value schema() { return schema::array(detail::schema_of<T>(), N, N); }
 	};
 
 	// C arrays can be encoded. Read them with Value::read_to.
@@ -869,15 +1015,7 @@ namespace jw
 			return result;
 		}
 
-		static Value schema()
-		{
-			Value result = Value::object();
-			result.set("type", "array");
-			result.set("items", detail::schema_of<T>());
-			result.set("minItems", N);
-			result.set("maxItems", N);
-			return result;
-		}
+		static Value schema() { return schema::array(detail::schema_of<T>(), N, N); }
 	};
 
 	// ============================================================
@@ -1023,15 +1161,15 @@ namespace jw
 
 		static Value schema()
 		{
+			std::vector<const char*> names;
+
+			for (const auto& entry : EnumTraits<T>::entries()) names.push_back(entry.second);
+
+			Value enumerated = detail::string_enum(names);
 			Value result = Value::object();
 			detail::set_schema_title<T>(result);
-			result.set("type", "string");
-
-			Value names = Value::array();
-
-			for (const auto& entry : EnumTraits<T>::entries()) names.push(std::string(entry.second));
-
-			result.set("enum", names);
+			result.set("type", enumerated.get<std::string>("type"));
+			result.set("enum", enumerated["enum"]);
 			return result;
 		}
 	};
@@ -1143,9 +1281,10 @@ namespace jw
 			Value branches = Value::array();
 			detail::append_variant_schemas<variant_type, 0>(branches);
 
+			Value body = detail::keyword_schema("oneOf", std::move(branches));
 			Value result = Value::object();
 			detail::set_schema_title<variant_type>(result);
-			result.set("oneOf", branches);
+			result.set("oneOf", body["oneOf"]);
 			return result;
 		}
 	};
@@ -1272,22 +1411,6 @@ namespace jw
 			}
 		}
 
-		// JSON Pointer escape for a $defs key. Identifiers pass through unchanged.
-		inline std::string schema_ref(const char* name)
-		{
-			std::string escaped;
-			escaped.reserve(std::strlen(name));
-
-			for (const char* cursor = name; *cursor != '\0'; ++cursor)
-			{
-				if (*cursor == '~') escaped += "~0";
-				else if (*cursor == '/') escaped += "~1";
-				else escaped += *cursor;
-			}
-
-			return "#/$defs/" + escaped;
-		}
-
 		template <class T> void note_schema_def(const char* name, const Value& body)
 		{
 			auto* defs = SchemaScope::defs;
@@ -1378,24 +1501,25 @@ namespace jw
 		template <class T, class Tuple, std::size_t... I>
 		Value schema_from_struct(const Tuple& fields, std::index_sequence<I...> /* indices */)
 		{
-			Value properties = Value::object();
-			Value required = Value::array();
+			std::vector<schema::field> items;
 
 			auto add = [&](const char* name, auto member) {
 				using Field = std::remove_cv_t<std::remove_reference_t<decltype(std::declval<T>().*member)>>;
-				properties.set(name, schema_of<Field>());
+				Value child = schema_of<Field>();
 
-				if constexpr (!is_optional_v<Field>) required.push(std::string(name));
+				if constexpr (is_optional_v<Field>) items.push_back(schema::optional(name, std::move(child)));
+				else items.push_back(schema::required(name, std::move(child)));
 			};
 
 			(add(std::get<I>(fields).first, std::get<I>(fields).second), ...);
 
+			Value body = object_schema(items);
 			Value result = Value::object();
 			set_schema_title<T>(result);
-			result.set("type", "object");
-			result.set("properties", properties);
+			result.set("type", body.get<std::string>("type"));
+			result.set("properties", body["properties"]);
 
-			if (required.size() != 0) result.set("required", required);
+			if (body.has_key("required")) result.set("required", body["required"]);
 
 			return result;
 		}
@@ -1411,10 +1535,7 @@ namespace jw
 					if (name == nullptr) throw type_error("Recursive type has no schema name");
 
 					schema_state<T>::used_ref = true;
-
-					Value ref = Value::object();
-					ref.set("$ref", schema_ref(name));
-					return ref;
+					return schema::ref(name);
 				}
 
 				struct DepthGuard
@@ -1448,34 +1569,39 @@ namespace jw
 
 	} // namespace detail
 
-	template <class T> Value schema()
+	namespace schema
 	{
-		using Type = std::conditional_t<std::is_array_v<std::remove_reference_t<T>>,
-			std::remove_reference_t<T>,
-			std::decay_t<T>>;
 
-		detail::SchemaScope scope;
-		Value fragment = detail::schema_of<Type>();
-
-		if (!scope.outer) return fragment;
-
-		if (!fragment.is_object()) throw type_error("JSON schema must be an object");
-
-		Value result = Value::object();
-		result.set("$schema", "https://json-schema.org/draft/2020-12/schema");
-		fragment.for_each_member([&](Value key, Value item) { result.set(from_json<std::string>(key), item); });
-
-		if (detail::SchemaScope::defs != nullptr && !detail::SchemaScope::defs->empty())
+		template <class T> Value of()
 		{
-			Value defs = Value::object();
+			using Type = std::conditional_t<std::is_array_v<std::remove_reference_t<T>>,
+				std::remove_reference_t<T>,
+				std::decay_t<T>>;
 
-			for (const auto& def : *detail::SchemaScope::defs) defs.set(def.name, def.body);
+			detail::SchemaScope scope;
+			Value fragment = detail::schema_of<Type>();
 
-			result.set("$defs", defs);
+			if (!scope.outer) return fragment;
+
+			if (!fragment.is_object()) throw type_error("JSON schema must be an object");
+
+			Value result = Value::object();
+			result.set("$schema", "https://json-schema.org/draft/2020-12/schema");
+			fragment.for_each_member([&](Value key, Value item) { result.set(from_json<std::string>(key), item); });
+
+			if (detail::SchemaScope::defs != nullptr && !detail::SchemaScope::defs->empty())
+			{
+				Value definitions = Value::object();
+
+				for (const auto& def : *detail::SchemaScope::defs) definitions.set(def.name, def.body);
+
+				result.set("$defs", definitions);
+			}
+
+			return result;
 		}
 
-		return result;
-	}
+	} // namespace schema
 
 } // namespace jw
 

@@ -178,15 +178,7 @@ namespace jw
 			return SchemaPoint{value.at<int>(0), value.at<int>(1)};
 		}
 
-		static Value schema()
-		{
-			Value result = object();
-			result.set("type", "array");
-			result.set("items", jw::schema<int>());
-			result.set("minItems", 2);
-			result.set("maxItems", 2);
-			return result;
-		}
+		static Value schema() { return schema::array(schema::integer(), 2, 2); }
 	};
 }
 
@@ -530,42 +522,42 @@ TEST_CASE("variants registered with JW_JSON_VARIANT_KEY discriminate by key pres
 
 TEST_CASE("json schema for built-in and container types")
 {
-	CHECK(jw::schema<std::string>().get<std::string>("type") == "string");
-	CHECK(jw::schema<bool>().get<std::string>("type") == "boolean");
-	CHECK(jw::schema<int>().get<std::string>("type") == "integer");
-	CHECK(jw::schema<double>().get<std::string>("type") == "number");
-	CHECK(jw::schema<std::nullptr_t>().get<std::string>("type") == "null");
-	CHECK(jw::schema<jw::Value>().get<std::string>("$schema") == "https://json-schema.org/draft/2020-12/schema");
-	CHECK_FALSE(jw::schema<jw::Value>().has_key("type"));
+	CHECK(jw::schema::of<std::string>().get<std::string>("type") == "string");
+	CHECK(jw::schema::of<bool>().get<std::string>("type") == "boolean");
+	CHECK(jw::schema::of<int>().get<std::string>("type") == "integer");
+	CHECK(jw::schema::of<double>().get<std::string>("type") == "number");
+	CHECK(jw::schema::of<std::nullptr_t>().get<std::string>("type") == "null");
+	CHECK(jw::schema::of<jw::Value>().get<std::string>("$schema") == "https://json-schema.org/draft/2020-12/schema");
+	CHECK_FALSE(jw::schema::of<jw::Value>().has_key("type"));
 
-	const auto text = jw::schema<const char*>();
+	const auto text = jw::schema::of<const char*>();
 	CHECK(text["anyOf"][0].get<std::string>("type") == "string");
 	CHECK(text["anyOf"][1].get<std::string>("type") == "null");
 	CHECK_FALSE(text["anyOf"][0].has_key("$schema"));
 
-	const auto values = jw::schema<std::vector<std::optional<int>>>();
+	const auto values = jw::schema::of<std::vector<std::optional<int>>>();
 	CHECK(values.get<std::string>("type") == "array");
 	CHECK(values["items"]["anyOf"][0].get<std::string>("type") == "integer");
 	CHECK(values["items"]["anyOf"][1].get<std::string>("type") == "null");
 
-	const auto scores = jw::schema<TwoInts>();
+	const auto scores = jw::schema::of<TwoInts>();
 	CHECK(scores.get<int>("minItems") == 2);
 	CHECK(scores.get<int>("maxItems") == 2);
 	CHECK(scores["items"].get<std::string>("type") == "integer");
 
-	const auto raw = jw::schema<int[3]>();
+	const auto raw = jw::schema::of<int[3]>();
 	CHECK(raw.get<int>("minItems") == 3);
 	CHECK(raw.get<int>("maxItems") == 3);
 
-	const auto metadata = jw::schema<StringMap>();
+	const auto metadata = jw::schema::of<StringMap>();
 	CHECK(metadata.get<std::string>("type") == "object");
 	CHECK(metadata["additionalProperties"].get<std::string>("type") == "integer");
-	CHECK(jw::schema<StringPairs>()["additionalProperties"].get<std::string>("type") == "integer");
+	CHECK(jw::schema::of<StringPairs>()["additionalProperties"].get<std::string>("type") == "integer");
 }
 
 TEST_CASE("json schema for structs, enums, and variants")
 {
-	const auto resident = jw::schema<Resident>();
+	const auto resident = jw::schema::of<Resident>();
 	CHECK(resident.get<std::string>("$schema") == "https://json-schema.org/draft/2020-12/schema");
 	CHECK(resident.get<std::string>("title") == "Resident");
 	CHECK(resident.get<std::string>("type") == "object");
@@ -585,19 +577,19 @@ TEST_CASE("json schema for structs, enums, and variants")
 	CHECK(city["anyOf"][1].get<std::string>("type") == "null");
 	CHECK_FALSE(city.has_key("$schema"));
 
-	const auto status = jw::schema<Status>();
+	const auto status = jw::schema::of<Status>();
 	CHECK(status.get<std::string>("title") == "Status");
 	CHECK(status.get<std::string>("type") == "string");
 	CHECK(status["enum"].size() == 2);
 	CHECK(status["enum"].at<std::string>(0) == "Ok");
 	CHECK(status["enum"].at<std::string>(1) == "Error");
 
-	const auto task = jw::schema<Task>();
+	const auto task = jw::schema::of<Task>();
 	CHECK(task["properties"]["note"]["anyOf"][0]["enum"].at<std::string>(0) == "Ok");
 	CHECK(task["properties"]["colors"]["items"]["enum"].at<std::string>(2) == "Blue");
 	CHECK(task["required"].size() == 2);
 
-	const auto shape = jw::schema<Shape>();
+	const auto shape = jw::schema::of<Shape>();
 	CHECK(shape.get<std::string>("title") == "Shape");
 	CHECK(shape["oneOf"].size() == 2);
 	const auto circle = shape["oneOf"][0];
@@ -609,7 +601,7 @@ TEST_CASE("json schema for structs, enums, and variants")
 	CHECK(rect["properties"]["type"].get<std::string>("const") == "rect");
 	CHECK(rect["required"].at<std::string>(2) == "type");
 
-	const auto keyed = jw::schema<ShapeKey>();
+	const auto keyed = jw::schema::of<ShapeKey>();
 	CHECK(keyed["oneOf"].size() == 2);
 	CHECK(keyed["oneOf"][0].get<std::string>("type") == "object");
 	CHECK(keyed["oneOf"][0]["required"].at<std::string>(0) == "circle");
@@ -617,36 +609,36 @@ TEST_CASE("json schema for structs, enums, and variants")
 	CHECK(keyed["oneOf"][0]["properties"]["circle"].get<std::string>("title") == "KeyCircle");
 	CHECK(keyed["oneOf"][1]["required"].at<std::string>(0) == "rect");
 
-	const auto setting = jw::schema<Setting>();
+	const auto setting = jw::schema::of<Setting>();
 	CHECK(setting["oneOf"][0]["properties"]["number"].get<std::string>("type") == "integer");
 	CHECK(setting["oneOf"][1]["properties"]["text"].get<std::string>("type") == "string");
 	CHECK(setting["oneOf"][1].get<bool>("additionalProperties") == false);
 
-	CHECK_THROWS_AS(jw::schema<NumberOrCircle>(), jw::type_error);
+	CHECK_THROWS_AS(jw::schema::of<NumberOrCircle>(), jw::type_error);
 
-	const auto bare = jw::schema<BareSchema>();
+	const auto bare = jw::schema::of<BareSchema>();
 	CHECK_FALSE(bare.has_key("title"));
 	CHECK(bare["properties"]["n"].get<std::string>("type") == "integer");
 	CHECK(bare["required"].at<std::string>(0) == "n");
-	CHECK(jw::schema<BareSchema>()["properties"].has_key("n"));
+	CHECK(jw::schema::of<BareSchema>()["properties"].has_key("n"));
 }
 
 TEST_CASE("json schema for custom converters and recursive types")
 {
-	const auto point = jw::schema<SchemaPoint>();
+	const auto point = jw::schema::of<SchemaPoint>();
 	CHECK(point.get<std::string>("type") == "array");
 	CHECK(point["items"].get<std::string>("type") == "integer");
 	CHECK_FALSE(point["items"].has_key("$schema"));
 	CHECK(point.get<int>("minItems") == 2);
 	CHECK(point.get<int>("maxItems") == 2);
 
-	const auto marker = jw::schema<SchemaMarker>();
+	const auto marker = jw::schema::of<SchemaMarker>();
 	CHECK(marker.get<std::string>("title") == "SchemaMarker");
 	CHECK(marker["properties"]["position"].get<int>("minItems") == 2);
 	CHECK_FALSE(marker["properties"]["position"].has_key("$schema"));
 	CHECK(marker["required"].at<std::string>(1) == "position");
 
-	const auto node = jw::schema<Node>();
+	const auto node = jw::schema::of<Node>();
 	CHECK(node.get<std::string>("title") == "Node");
 	CHECK(node["properties"]["children"].get<std::string>("type") == "array");
 	CHECK(node["properties"]["children"]["items"].get<std::string>("$ref") == "#/$defs/Node");
@@ -655,12 +647,86 @@ TEST_CASE("json schema for custom converters and recursive types")
 	CHECK(node["required"].at<std::string>(0) == "name");
 	CHECK(node["required"].at<std::string>(1) == "children");
 
-	const auto again = jw::schema<Node>();
+	const auto again = jw::schema::of<Node>();
 	CHECK(again["properties"].has_key("name"));
 	CHECK(again.has_key("$defs"));
 
-	CHECK_THROWS_AS(jw::schema<Loop>(), jw::type_error);
-	CHECK(jw::schema<City>().get<std::string>("title") == "City");
+	CHECK_THROWS_AS(jw::schema::of<Loop>(), jw::type_error);
+	CHECK(jw::schema::of<City>().get<std::string>("title") == "City");
+}
+
+TEST_CASE("json schema helpers")
+{
+	CHECK(jw::schema::string().get<std::string>("type") == "string");
+	CHECK(jw::schema::boolean().get<std::string>("type") == "boolean");
+	CHECK(jw::schema::integer().get<std::string>("type") == "integer");
+	CHECK(jw::schema::number().get<std::string>("type") == "number");
+	CHECK(jw::schema::null().get<std::string>("type") == "null");
+	CHECK_FALSE(jw::schema::any().has_key("type"));
+
+	const auto open = jw::schema::array(jw::schema::string());
+	CHECK(open.get<std::string>("type") == "array");
+	CHECK(open["items"].get<std::string>("type") == "string");
+	CHECK_FALSE(open.has_key("minItems"));
+	CHECK_FALSE(open.has_key("maxItems"));
+
+	const auto minimum = jw::schema::array(jw::schema::string(), 1);
+	CHECK(minimum.get<int>("minItems") == 1);
+	CHECK_FALSE(minimum.has_key("maxItems"));
+
+	const auto bounded = jw::schema::array(jw::schema::integer(), 2, 4);
+	CHECK(bounded.get<int>("minItems") == 2);
+	CHECK(bounded.get<int>("maxItems") == 4);
+
+	const auto maximum = jw::schema::array(jw::schema::string(), std::nullopt, 4);
+	CHECK_FALSE(maximum.has_key("minItems"));
+	CHECK(maximum.get<int>("maxItems") == 4);
+
+	const auto object = jw::schema::object({
+		jw::schema::required("name", jw::schema::string()),
+		jw::schema::optional("nickname", jw::schema::nullable(jw::schema::string())),
+	});
+	CHECK(object["properties"].has_key("name"));
+	CHECK(object["properties"].has_key("nickname"));
+	CHECK(object["required"].size() == 1);
+	CHECK(object["required"].at<std::string>(0) == "name");
+	CHECK(object["properties"]["nickname"]["anyOf"][0].get<std::string>("type") == "string");
+	CHECK(object["properties"]["nickname"]["anyOf"][1].get<std::string>("type") == "null");
+
+	const auto absent = jw::schema::object({jw::schema::optional("nickname", jw::schema::string())});
+	CHECK_FALSE(absent.has_key("required"));
+
+	CHECK(jw::schema::map(jw::schema::integer())["additionalProperties"].get<std::string>("type") == "integer");
+
+	const auto names = jw::schema::enumeration({"Admin", "Member"});
+	CHECK(names.get<std::string>("type") == "string");
+	CHECK(names["enum"].at<std::string>(0) == "Admin");
+	CHECK(names["enum"].at<std::string>(1) == "Member");
+
+	CHECK(jw::schema::any_of({jw::schema::string(), jw::schema::integer()})["anyOf"].size() == 2);
+	CHECK(jw::schema::one_of({jw::schema::string(), jw::schema::integer()})["oneOf"].size() == 2);
+	CHECK(jw::schema::all_of({jw::schema::string(), jw::schema::integer()})["allOf"].size() == 2);
+	CHECK(jw::schema::nullable(jw::schema::integer())["anyOf"][1].get<std::string>("type") == "null");
+
+	CHECK(jw::schema::ref("Node").get<std::string>("$ref") == "#/$defs/Node");
+	CHECK(jw::schema::ref("a/b").get<std::string>("$ref") == "#/$defs/a~1b");
+	CHECK(jw::schema::ref("a~b").get<std::string>("$ref") == "#/$defs/a~0b");
+
+	const auto unchanged = jw::schema::defs(jw::schema::string(), {});
+	CHECK_FALSE(unchanged.has_key("$defs"));
+
+	const auto tree = jw::schema::defs(jw::schema::array(jw::schema::ref("Node")),
+		{
+			{"Node", jw::schema::string()},
+			{"Leaf", jw::schema::integer()},
+		});
+	CHECK(tree["items"].get<std::string>("$ref") == "#/$defs/Node");
+	CHECK(tree["$defs"]["Node"].get<std::string>("type") == "string");
+	CHECK(tree["$defs"]["Leaf"].get<std::string>("type") == "integer");
+	const auto defs_text = tree["$defs"].dump();
+	CHECK(defs_text.find("\"Node\"") < defs_text.find("\"Leaf\""));
+
+	CHECK_THROWS_AS(jw::schema::defs(jw::array(), {{"A", jw::schema::string()}}), jw::type_error);
 }
 
 TEST_CASE("yyjson pointers refer to the owned mutable document")

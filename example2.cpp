@@ -27,15 +27,7 @@ namespace jw
 			return Point{value.at<int>(0), value.at<int>(1)};
 		}
 
-		static Value schema()
-		{
-			Value result = object();
-			result.set("type", "array");
-			result.set("items", jw::schema<int>());
-			result.set("minItems", 2);
-			result.set("maxItems", 2);
-			return result;
-		}
+		static Value schema() { return schema::array(schema::integer(), 2, 2); }
 	};
 }
 
@@ -65,5 +57,5 @@ int main()
 	std::cout << copy.position.x << '\n';
 	std::cout << copy.position.y << '\n';
 
-	std::cout << '\n' << jw::stringify(jw::schema<Marker>(), true) << '\n';
+	std::cout << '\n' << jw::stringify(jw::schema::of<Marker>(), true) << '\n';
 }

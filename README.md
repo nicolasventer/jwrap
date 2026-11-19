@@ -13,7 +13,7 @@ jwrap is a **C++ library** that lets you **read and write JSON** and convert bet
 - Struct fields registered with `JW_JSON_FIELDS` (up to 8 fields), or a custom `jw::Converter`
 - Enums registered with `JW_JSON_ENUM` (up to 32 enumerators), read and written as JSON strings
 - `std::variant` registered with `JW_JSON_VARIANT_TAG` (a field value selects the alternative) or `JW_JSON_VARIANT_KEY` (a single key selects it), up to 8 alternatives
-- JSON Schema draft 2020-12 from those registrations through `jw::schema<T>()`, or from `Converter<T>::schema()`
+- JSON Schema draft 2020-12 from those registrations through `jw::schema::of<T>()`, or from `Converter<T>::schema()`
 - Optional parse flags for comments and trailing commas
 - Compact output, 4-space pretty print, and 2-space pretty print
 - Access to the underlying `yyjson_mut_val` and `yyjson_mut_doc`
@@ -304,15 +304,7 @@ namespace jw
 			return Point{value.at<int>(0), value.at<int>(1)};
 		}
 
-		static Value schema()
-		{
-			Value result = object();
-			result.set("type", "array");
-			result.set("items", jw::schema<int>());
-			result.set("minItems", 2);
-			result.set("maxItems", 2);
-			return result;
-		}
+		static Value schema() { return schema::array(schema::integer(), 2, 2); }
 	};
 }
 
@@ -342,7 +334,7 @@ int main()
 	std::cout << copy.position.x << '\n';
 	std::cout << copy.position.y << '\n';
 
-	std::cout << '\n' << jw::stringify(jw::schema<Marker>(), true) << '\n';
+	std::cout << '\n' << jw::stringify(jw::schema::of<Marker>(), true) << '\n';
 }
 ```
 
@@ -387,10 +379,10 @@ origin
 
 ### JSON Schema
 
-`jw::schema<T>()` returns a JSON Schema draft 2020-12 document. Types registered with `JW_JSON_FIELDS`, `JW_JSON_ENUM`, `JW_JSON_VARIANT_TAG`, or `JW_JSON_VARIANT_KEY` need no extra registration. Only the outermost document sets `$schema`.
+`jw::schema::of<T>()` returns a JSON Schema draft 2020-12 document. Types registered with `JW_JSON_FIELDS`, `JW_JSON_ENUM`, `JW_JSON_VARIANT_TAG`, or `JW_JSON_VARIANT_KEY` need no extra registration. Only the outermost `of<T>()` sets `$schema`.
 
 ```cpp
-jw::Value schema = jw::schema<User>();
+jw::Value schema = jw::schema::of<User>();
 std::string text = jw::stringify(schema, true);
 ```
 
@@ -455,7 +447,29 @@ A tag variant is `oneOf`. Each branch is that alternative's object schema plus a
 
 A type that contains itself, such as a node with `std::vector<Node> children`, keeps that nested occurrence as a `$ref` into `$defs`. The macros store the type name for `title` and for that `$defs` key. A hand-written traits specialization without `type_name()` produces a schema with no title. A recursive type still needs the name.
 
-A custom converter supplies the schema the same way it supplies `encode` and `decode`. `Point` above is an array of two integers. Inside `schema()`, call `jw::schema<T>()` for another type.
+The same namespace builds fragments for a custom `schema()` method. `string`, `boolean`, `integer`, `number`, and `null` are the JSON types. `any` accepts any value. `array` takes the item schema and, optionally, a minimum and a maximum length. `map` is an object with `additionalProperties`. `enumeration` is a string enum. `any_of`, `one_of`, and `all_of` wrap a list of schemas. `nullable` adds null beside a schema.
+
+`required` and `optional` mark a field of `object`. `optional` leaves the name out of `required`. It does not allow null; wrap the field schema in `nullable` for that.
+
+```cpp
+jw::schema::object({
+    jw::schema::required("name", jw::schema::string()),
+    jw::schema::optional("nickname", jw::schema::nullable(jw::schema::string())),
+});
+```
+
+`ref` points at a `$defs` entry. `defs` attaches those entries to a schema. The name passed to `ref` is the key, so `ref("Node")` is `#/$defs/Node`.
+
+```cpp
+jw::Value node = jw::schema::object({
+    jw::schema::required("label", jw::schema::string()),
+    jw::schema::required("children", jw::schema::array(jw::schema::ref("Node"))),
+});
+
+jw::Value tree = jw::schema::defs(node, {{"Node", node}});
+```
+
+`Point` in the custom converter above is `jw::schema::array(jw::schema::integer(), 2, 2)`. Inside `schema()`, call `jw::schema::of<T>()` for another registered type.
 
 ### Errors and yyjson handles
 
