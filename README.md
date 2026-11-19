@@ -13,6 +13,7 @@ jwrap is a **C++ library** that lets you **read and write JSON** and convert bet
 - Struct fields registered with `JW_JSON_FIELDS` (up to 8 fields), or a custom `jw::Converter`
 - Enums registered with `JW_JSON_ENUM` (up to 32 enumerators), read and written as JSON strings
 - `std::variant` registered with `JW_JSON_VARIANT_TAG` (a field value selects the alternative) or `JW_JSON_VARIANT_KEY` (a single key selects it), up to 8 alternatives
+- JSON Schema draft 2020-12 from those registrations through `jw::schema<T>()`, or from `Converter<T>::schema()`
 - Optional parse flags for comments and trailing commas
 - Compact output, 4-space pretty print, and 2-space pretty print
 - Access to the underlying `yyjson_mut_val` and `yyjson_mut_doc`
@@ -265,7 +266,7 @@ This reads and writes `{"number": 1}` and `{"text": "hi"}`. The same macro with 
 
 Specialize `jw::VariantTraits<T>` for more than 8 alternatives, or for a name that is not an identifier. `names()` returns the JSON names in alternative order. Tag mode also defines `tag()` as the discriminator field name. Key mode omits `tag()`.
 
-For a type these macros do not cover, specialize `jw::Converter<T>` with `encode` and `decode`.
+For a type these macros do not cover, specialize `jw::Converter<T>` with `encode`, `decode`, and `schema`.
 
 ### Custom converter
 
@@ -302,6 +303,16 @@ namespace jw
 
 			return Point{value.at<int>(0), value.at<int>(1)};
 		}
+
+		static Value schema()
+		{
+			Value result = object();
+			result.set("type", "array");
+			result.set("items", jw::schema<int>());
+			result.set("minItems", 2);
+			result.set("maxItems", 2);
+			return result;
+		}
 	};
 }
 
@@ -330,6 +341,8 @@ int main()
 	std::cout << copy.name << '\n';
 	std::cout << copy.position.x << '\n';
 	std::cout << copy.position.y << '\n';
+
+	std::cout << '\n' << jw::stringify(jw::schema<Marker>(), true) << '\n';
 }
 ```
 
@@ -347,7 +360,102 @@ int main()
 origin
 1
 2
+
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "Marker",
+    "type": "object",
+    "properties": {
+        "name": {
+            "type": "string"
+        },
+        "position": {
+            "type": "array",
+            "items": {
+                "type": "integer"
+            },
+            "minItems": 2,
+            "maxItems": 2
+        }
+    },
+    "required": [
+        "name",
+        "position"
+    ]
+}
 ```
+
+### JSON Schema
+
+`jw::schema<T>()` returns a JSON Schema draft 2020-12 document. Types registered with `JW_JSON_FIELDS`, `JW_JSON_ENUM`, `JW_JSON_VARIANT_TAG`, or `JW_JSON_VARIANT_KEY` need no extra registration. Only the outermost document sets `$schema`.
+
+```cpp
+jw::Value schema = jw::schema<User>();
+std::string text = jw::stringify(schema, true);
+```
+
+**Output:**
+
+```json
+{
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "User",
+    "type": "object",
+    "properties": {
+        "name": {
+            "type": "string"
+        },
+        "age": {
+            "type": "integer"
+        },
+        "role": {
+            "title": "Role",
+            "type": "string",
+            "enum": [
+                "Admin",
+                "Member"
+            ]
+        },
+        "tags": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            }
+        },
+        "address": {
+            "title": "Address",
+            "type": "object",
+            "properties": {
+                "city": {
+                    "type": "string"
+                },
+                "zip": {
+                    "type": "integer"
+                }
+            },
+            "required": [
+                "city",
+                "zip"
+            ]
+        }
+    },
+    "required": [
+        "name",
+        "age",
+        "role",
+        "tags",
+        "address"
+    ]
+}
+```
+
+A struct is an object. Fields stay in registration order. A `std::optional` field is left out of `required`. Every other field is required. The optional schema accepts the inner type or null, because a missing key and JSON null both read as `nullopt`. Extra object keys stay allowed. A `std::vector` is an array of its element schema. `std::array` and a C array set `minItems` and `maxItems`. A `std::map` or `std::vector<std::pair>` is an object whose `additionalProperties` is the value schema. An enum is a string limited to the registered names, in registration order.
+
+A tag variant is `oneOf`. Each branch is that alternative's object schema plus a `const` tag, and the tag is required. A key variant is `oneOf` single-key objects, and each branch forbids other keys. A tagged alternative has to encode as an object, or building the schema throws `jw::type_error`.
+
+A type that contains itself, such as a node with `std::vector<Node> children`, keeps that nested occurrence as a `$ref` into `$defs`. The macros store the type name for `title` and for that `$defs` key. A hand-written traits specialization without `type_name()` produces a schema with no title. A recursive type still needs the name.
+
+A custom converter supplies the schema the same way it supplies `encode` and `decode`. `Point` above is an array of two integers. Inside `schema()`, call `jw::schema<T>()` for another type.
 
 ### Errors and yyjson handles
 

@@ -126,6 +126,8 @@ namespace jw
 
 	template <class T> T from_json(const Value& value);
 
+	template <class T> Value schema();
+
 	// ============================================================
 	// Value
 	// ============================================================
@@ -168,6 +170,8 @@ namespace jw
 		template <class T, class Enable> friend struct Converter;
 
 		template <class T> friend T from_json(const Value& value);
+
+		template <class T> friend Value schema();
 
 	public:
 		Value(const Value&) = default;
@@ -444,6 +448,31 @@ namespace jw
 			"or define a Converter specialization.");
 	};
 
+	namespace detail
+	{
+
+		template <class T> Value schema_of();
+
+		template <class T> void set_schema_title(Value& schema);
+
+		inline Value typed_schema(const char* type)
+		{
+			Value result = Value::object();
+			result.set("type", type);
+			return result;
+		}
+
+		template <class T, class Tuple, std::size_t... I>
+		Value schema_from_struct(const Tuple& fields, std::index_sequence<I...> /* indices */);
+
+		inline Value with_variant_tag(Value schema, const char* tag, const char* name);
+
+		inline Value with_variant_key(Value payload, const char* name);
+
+		template <class Variant, std::size_t I> void append_variant_schemas(Value& branches);
+
+	} // namespace detail
+
 	// Strings
 	template <> struct Converter<std::string>
 	{
@@ -465,6 +494,8 @@ namespace jw
 
 			return std::string(yyjson_mut_get_str(value.root_), yyjson_mut_get_len(value.root_));
 		}
+
+		static Value schema() { return detail::typed_schema("string"); }
 	};
 
 	// C string pointers
@@ -475,6 +506,16 @@ namespace jw
 			if (value == nullptr) return Value::null();
 
 			return Converter<std::string>::encode(std::string(value));
+		}
+
+		static Value schema()
+		{
+			Value result = Value::object();
+			Value options = Value::array();
+			options.push(detail::typed_schema("string"));
+			options.push(detail::typed_schema("null"));
+			result.set("anyOf", options);
+			return result;
 		}
 	};
 
@@ -498,6 +539,8 @@ namespace jw
 
 			return yyjson_mut_get_bool(value.root_);
 		}
+
+		static Value schema() { return detail::typed_schema("boolean"); }
 	};
 
 	// Integral types
@@ -581,6 +624,8 @@ namespace jw
 
 			return static_cast<T>(n);
 		}
+
+		static Value schema() { return detail::typed_schema("integer"); }
 	};
 
 	// Floating-point types
@@ -614,6 +659,8 @@ namespace jw
 
 			return static_cast<T>(n);
 		}
+
+		static Value schema() { return detail::typed_schema("number"); }
 	};
 
 	// Null pointer -> JSON null
@@ -627,6 +674,8 @@ namespace jw
 
 			return nullptr;
 		}
+
+		static Value schema() { return detail::typed_schema("null"); }
 	};
 
 	// Value itself
@@ -635,6 +684,9 @@ namespace jw
 		static Value encode(const Value& value) { return value; }
 
 		static Value decode(const Value& value) { return value; }
+
+		// Any JSON instance.
+		static Value schema() { return Value::object(); }
 	};
 
 	// Vectors
@@ -660,6 +712,14 @@ namespace jw
 
 			return result;
 		}
+
+		static Value schema()
+		{
+			Value result = Value::object();
+			result.set("type", "array");
+			result.set("items", detail::schema_of<T>());
+			return result;
+		}
 	};
 
 	// Optional values. Empty encodes as JSON null.
@@ -678,6 +738,16 @@ namespace jw
 			if (value.is_null()) return std::nullopt;
 
 			return from_json<T>(value);
+		}
+
+		static Value schema()
+		{
+			Value result = Value::object();
+			Value options = Value::array();
+			options.push(detail::schema_of<T>());
+			options.push(detail::typed_schema("null"));
+			result.set("anyOf", options);
+			return result;
 		}
 	};
 
@@ -714,6 +784,14 @@ namespace jw
 			value.for_each_member([&](Value key, Value item) { result.emplace(from_json<K>(key), from_json<V>(item)); });
 			return result;
 		}
+
+		static Value schema()
+		{
+			Value result = Value::object();
+			result.set("type", "object");
+			result.set("additionalProperties", detail::schema_of<V>());
+			return result;
+		}
 	};
 
 	template <class K, class V> struct Converter<std::vector<std::pair<K, V>>>
@@ -734,6 +812,14 @@ namespace jw
 			std::vector<std::pair<K, V>> result;
 			result.reserve(value.size());
 			value.for_each_member([&](Value key, Value item) { result.emplace_back(from_json<K>(key), from_json<V>(item)); });
+			return result;
+		}
+
+		static Value schema()
+		{
+			Value result = Value::object();
+			result.set("type", "object");
+			result.set("additionalProperties", detail::schema_of<V>());
 			return result;
 		}
 	};
@@ -759,6 +845,16 @@ namespace jw
 
 			return result;
 		}
+
+		static Value schema()
+		{
+			Value result = Value::object();
+			result.set("type", "array");
+			result.set("items", detail::schema_of<T>());
+			result.set("minItems", N);
+			result.set("maxItems", N);
+			return result;
+		}
 	};
 
 	// C arrays can be encoded. Read them with Value::read_to.
@@ -770,6 +866,16 @@ namespace jw
 
 			for (std::size_t i = 0; i < N; ++i) result.push(items[i]);
 
+			return result;
+		}
+
+		static Value schema()
+		{
+			Value result = Value::object();
+			result.set("type", "array");
+			result.set("items", detail::schema_of<T>());
+			result.set("minItems", N);
+			result.set("maxItems", N);
 			return result;
 		}
 	};
@@ -878,6 +984,13 @@ namespace jw
 
 			return decode_struct_fields<T>(value, StructTraits<T>::fields(), std::make_index_sequence<count>{});
 		}
+
+		static Value schema()
+		{
+			constexpr std::size_t count = std::tuple_size_v<decltype(StructTraits<T>::fields())>;
+
+			return detail::schema_from_struct<T>(StructTraits<T>::fields(), std::make_index_sequence<count>{});
+		}
 	};
 
 	// Registered enum converter. Values are JSON strings.
@@ -906,6 +1019,20 @@ namespace jw
 			}
 
 			throw type_error("Unknown enum name");
+		}
+
+		static Value schema()
+		{
+			Value result = Value::object();
+			detail::set_schema_title<T>(result);
+			result.set("type", "string");
+
+			Value names = Value::array();
+
+			for (const auto& entry : EnumTraits<T>::entries()) names.push(std::string(entry.second));
+
+			result.set("enum", names);
+			return result;
 		}
 	};
 
@@ -1010,7 +1137,345 @@ namespace jw
 
 			return detail::decode_variant_key<variant_type, 0>(value);
 		}
+
+		static Value schema()
+		{
+			Value branches = Value::array();
+			detail::append_variant_schemas<variant_type, 0>(branches);
+
+			Value result = Value::object();
+			detail::set_schema_title<variant_type>(result);
+			result.set("oneOf", branches);
+			return result;
+		}
 	};
+
+	// ============================================================
+	// JSON Schema (draft 2020-12)
+	// ============================================================
+
+	namespace detail
+	{
+
+		struct SchemaDef
+		{
+			const char* name = nullptr;
+			Value body;
+			void (*id)() = nullptr;
+		};
+
+		struct SchemaScope
+		{
+			static inline thread_local int depth = 0;
+			static inline thread_local std::vector<SchemaDef>* defs = nullptr;
+
+			std::vector<SchemaDef> local;
+			bool outer;
+
+			SchemaScope() : outer(depth++ == 0)
+			{
+				if (outer) defs = &local;
+			}
+
+			SchemaScope(const SchemaScope&) = delete;
+			SchemaScope& operator=(const SchemaScope&) = delete;
+
+			~SchemaScope()
+			{
+				if (outer) defs = nullptr;
+
+				--depth;
+			}
+		};
+
+		template <class T> struct schema_state
+		{
+			static inline thread_local int depth = 0;
+			static inline thread_local bool used_ref = false;
+		};
+
+		template <class T> void schema_identity() {}
+
+		template <class T, class = void> struct has_struct_type_name : std::false_type
+		{
+		};
+
+		template <class T>
+		struct has_struct_type_name<T, std::void_t<decltype(StructTraits<T>::type_name())>> : std::true_type
+		{
+		};
+
+		template <class T, class = void> struct has_enum_type_name : std::false_type
+		{
+		};
+
+		template <class T>
+		struct has_enum_type_name<T, std::void_t<decltype(EnumTraits<T>::type_name())>> : std::true_type
+		{
+		};
+
+		template <class T, class = void> struct has_variant_type_name : std::false_type
+		{
+		};
+
+		template <class T>
+		struct has_variant_type_name<T, std::void_t<decltype(VariantTraits<T>::type_name())>> : std::true_type
+		{
+		};
+
+		template <class T, class = void> struct converter_has_schema : std::false_type
+		{
+		};
+
+		template <class T>
+		struct converter_has_schema<T, std::void_t<decltype(Converter<T>::schema())>> : std::true_type
+		{
+		};
+
+		template <class T>
+		inline constexpr bool is_schema_named_v = has_struct_traits<T>::value || has_enum_traits<T>::value
+			|| has_variant_traits<T>::value;
+
+		template <class T> void set_schema_title(Value& schema)
+		{
+			if constexpr (has_struct_traits<T>::value)
+			{
+				if constexpr (has_struct_type_name<T>::value) schema.set("title", StructTraits<T>::type_name());
+			}
+			else if constexpr (has_enum_traits<T>::value)
+			{
+				if constexpr (has_enum_type_name<T>::value) schema.set("title", EnumTraits<T>::type_name());
+			}
+			else if constexpr (has_variant_traits<T>::value)
+			{
+				if constexpr (has_variant_type_name<T>::value) schema.set("title", VariantTraits<T>::type_name());
+			}
+		}
+
+		template <class T> const char* schema_type_name()
+		{
+			if constexpr (has_struct_traits<T>::value && has_struct_type_name<T>::value)
+			{
+				return StructTraits<T>::type_name();
+			}
+			else if constexpr (has_enum_traits<T>::value && has_enum_type_name<T>::value)
+			{
+				return EnumTraits<T>::type_name();
+			}
+			else if constexpr (has_variant_traits<T>::value && has_variant_type_name<T>::value)
+			{
+				return VariantTraits<T>::type_name();
+			}
+			else
+			{
+				return nullptr;
+			}
+		}
+
+		// JSON Pointer escape for a $defs key. Identifiers pass through unchanged.
+		inline std::string schema_ref(const char* name)
+		{
+			std::string escaped;
+			escaped.reserve(std::strlen(name));
+
+			for (const char* cursor = name; *cursor != '\0'; ++cursor)
+			{
+				if (*cursor == '~') escaped += "~0";
+				else if (*cursor == '/') escaped += "~1";
+				else escaped += *cursor;
+			}
+
+			return "#/$defs/" + escaped;
+		}
+
+		template <class T> void note_schema_def(const char* name, const Value& body)
+		{
+			auto* defs = SchemaScope::defs;
+
+			if (defs == nullptr) throw type_error("Schema definitions are unavailable");
+
+			void (*id)() = &schema_identity<T>;
+
+			for (const auto& def : *defs)
+			{
+				if (def.id == id) return;
+
+				if (std::strcmp(def.name, name) == 0) throw type_error("Duplicate schema name");
+			}
+
+			defs->push_back(SchemaDef{name, Value::parse(body.dump()), id});
+		}
+
+		inline Value with_variant_tag(Value schema, const char* tag, const char* name)
+		{
+			if (!schema.is_object() || !schema.has_key("type") || schema.get<std::string>("type") != "object")
+			{
+				throw type_error("Tagged variant alternative must be a JSON object");
+			}
+
+			if (!schema.has_key("properties")) schema.set("properties", Value::object());
+
+			Value constant = Value::object();
+			constant.set("const", name);
+			schema["properties"].set(tag, constant);
+
+			if (!schema.has_key("required"))
+			{
+				Value required = Value::array();
+				required.push(std::string(tag));
+				schema.set("required", required);
+				return schema;
+			}
+
+			Value required = schema["required"];
+
+			for (std::size_t index = 0; index < required.size(); ++index)
+			{
+				if (required.at<std::string>(index) == tag) return schema;
+			}
+
+			required.push(std::string(tag));
+			return schema;
+		}
+
+		inline Value with_variant_key(Value payload, const char* name)
+		{
+			Value result = Value::object();
+			result.set("type", "object");
+
+			Value properties = Value::object();
+			properties.set(name, payload);
+			result.set("properties", properties);
+
+			Value required = Value::array();
+			required.push(std::string(name));
+			result.set("required", required);
+			result.set("additionalProperties", false);
+			return result;
+		}
+
+		template <class Variant, std::size_t I> void append_variant_schemas(Value& branches)
+		{
+			if constexpr (I < std::variant_size_v<Variant>)
+			{
+				using Alternative = std::variant_alternative_t<I, Variant>;
+				constexpr auto names = VariantTraits<Variant>::names();
+				Value alternative = schema_of<Alternative>();
+
+				if constexpr (variant_has_tag<Variant>::value)
+				{
+					branches.push(with_variant_tag(std::move(alternative), VariantTraits<Variant>::tag(), names[I]));
+				}
+				else
+				{
+					branches.push(with_variant_key(std::move(alternative), names[I]));
+				}
+
+				append_variant_schemas<Variant, I + 1>(branches);
+			}
+		}
+
+		template <class T, class Tuple, std::size_t... I>
+		Value schema_from_struct(const Tuple& fields, std::index_sequence<I...> /* indices */)
+		{
+			Value properties = Value::object();
+			Value required = Value::array();
+
+			auto add = [&](const char* name, auto member) {
+				using Field = std::remove_cv_t<std::remove_reference_t<decltype(std::declval<T>().*member)>>;
+				properties.set(name, schema_of<Field>());
+
+				if constexpr (!is_optional_v<Field>) required.push(std::string(name));
+			};
+
+			(add(std::get<I>(fields).first, std::get<I>(fields).second), ...);
+
+			Value result = Value::object();
+			set_schema_title<T>(result);
+			result.set("type", "object");
+			result.set("properties", properties);
+
+			if (required.size() != 0) result.set("required", required);
+
+			return result;
+		}
+
+		template <class T> Value schema_of()
+		{
+			if constexpr (is_schema_named_v<T>)
+			{
+				if (schema_state<T>::depth > 0)
+				{
+					const char* name = schema_type_name<T>();
+
+					if (name == nullptr) throw type_error("Recursive type has no schema name");
+
+					schema_state<T>::used_ref = true;
+
+					Value ref = Value::object();
+					ref.set("$ref", schema_ref(name));
+					return ref;
+				}
+
+				struct DepthGuard
+				{
+					DepthGuard()
+					{
+						schema_state<T>::used_ref = false;
+						++schema_state<T>::depth;
+					}
+
+					~DepthGuard() { --schema_state<T>::depth; }
+				} guard;
+
+				Value body = Converter<T>::schema();
+
+				if (schema_state<T>::used_ref) note_schema_def<T>(schema_type_name<T>(), body);
+
+				return body;
+			}
+			else if constexpr (converter_has_schema<T>::value)
+			{
+				return Converter<T>::schema();
+			}
+			else
+			{
+				static_assert(converter_has_schema<T>::value,
+					"No schema for this type. Add static Value schema() to jw::Converter<T>.");
+				return Value::object();
+			}
+		}
+
+	} // namespace detail
+
+	template <class T> Value schema()
+	{
+		using Type = std::conditional_t<std::is_array_v<std::remove_reference_t<T>>,
+			std::remove_reference_t<T>,
+			std::decay_t<T>>;
+
+		detail::SchemaScope scope;
+		Value fragment = detail::schema_of<Type>();
+
+		if (!scope.outer) return fragment;
+
+		if (!fragment.is_object()) throw type_error("JSON schema must be an object");
+
+		Value result = Value::object();
+		result.set("$schema", "https://json-schema.org/draft/2020-12/schema");
+		fragment.for_each_member([&](Value key, Value item) { result.set(from_json<std::string>(key), item); });
+
+		if (detail::SchemaScope::defs != nullptr && !detail::SchemaScope::defs->empty())
+		{
+			Value defs = Value::object();
+
+			for (const auto& def : *detail::SchemaScope::defs) defs.set(def.name, def.body);
+
+			result.set("$defs", defs);
+		}
+
+		return result;
+	}
 
 } // namespace jw
 
@@ -1056,6 +1521,7 @@ namespace jw
 	{                                                                                                       \
 		template <> struct StructTraits<TYPE>                                                               \
 		{                                                                                                   \
+			static constexpr const char* type_name() { return #TYPE; }                                      \
 			static constexpr auto fields() { return std::make_tuple(JW_DETAIL_FIELDS(TYPE, __VA_ARGS__)); } \
 		};                                                                                                  \
 	}
@@ -1178,6 +1644,7 @@ namespace jw
 	{                                                                                                  \
 		template <> struct EnumTraits<TYPE>                                                            \
 		{                                                                                              \
+			static constexpr const char* type_name() { return #TYPE; }                                 \
 			static constexpr auto entries() { return std::array{JW_DETAIL_ENUMS(TYPE, __VA_ARGS__)}; } \
 		};                                                                                             \
 	}
@@ -1220,6 +1687,7 @@ namespace jw
 	{                                                                                                                       \
 		template <> struct VariantTraits<TYPE>                                                                              \
 		{                                                                                                                   \
+			static constexpr const char* type_name() { return #TYPE; }                                                       \
 			static constexpr const char* tag() { return #FIELD; }                                                           \
 			static constexpr auto names()                                                                                   \
 			{                                                                                                               \
@@ -1233,6 +1701,7 @@ namespace jw
 	{                                                                                                                       \
 		template <> struct VariantTraits<TYPE>                                                                              \
 		{                                                                                                                   \
+			static constexpr const char* type_name() { return #TYPE; }                                                       \
 			static constexpr auto names()                                                                                   \
 			{                                                                                                               \
 				return std::array<const char*, JW_DETAIL_VARIANT_COUNT(__VA_ARGS__)>{JW_DETAIL_VARIANT_NAMES(__VA_ARGS__)}; \
