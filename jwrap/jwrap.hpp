@@ -119,6 +119,8 @@ namespace jw
 
 	template <class T> struct StructTraits;
 
+	template <class T> struct ArrayTraits;
+
 	template <class T> struct EnumTraits;
 
 	template <class T> struct VariantTraits;
@@ -126,6 +128,14 @@ namespace jw
 	template <class T> Value to_value(const T& value);
 
 	template <class T> T from_json(const Value& value);
+
+	namespace detail
+	{
+
+		template <class T, class Tuple, std::size_t... I>
+		Value schema_from_array(const Tuple& fields, std::index_sequence<I...> indices);
+
+	} // namespace detail
 
 	namespace schema
 	{
@@ -178,6 +188,9 @@ namespace jw
 		template <class T> friend T from_json(const Value& value);
 
 		template <class T> friend Value schema::of();
+
+		template <class T, class Tuple, std::size_t... I>
+		friend Value detail::schema_from_array(const Tuple& fields, std::index_sequence<I...> indices);
 
 	public:
 		Value(const Value&) = default;
@@ -450,7 +463,7 @@ namespace jw
 	{
 		static_assert(!std::is_same_v<T, T>,
 			"No jw::Converter available for this type. "
-			"Use JW_JSON_OBJECT, JW_JSON_ENUM, JW_JSON_VARIANT_TAG, JW_JSON_VARIANT_KEY, "
+			"Use JW_JSON_OBJECT, JW_JSON_ARRAY, JW_JSON_ENUM, JW_JSON_VARIANT_TAG, JW_JSON_VARIANT_KEY, "
 			"or define a Converter specialization.");
 	};
 
@@ -463,6 +476,26 @@ namespace jw
 
 		template <class T, class Tuple, std::size_t... I>
 		Value schema_from_struct(const Tuple& fields, std::index_sequence<I...> /* indices */);
+
+		// One past the last field that is not std::optional. Zero when every field is optional.
+		template <class T, class Tuple, std::size_t... I>
+		constexpr std::size_t array_min_length(std::index_sequence<I...> /* indices */)
+		{
+			if constexpr (sizeof...(I) == 0) return 0;
+
+			constexpr std::array<bool, sizeof...(I)> optional_field{
+				is_optional_v<std::remove_cv_t<std::remove_reference_t<
+					decltype(std::declval<T>().*std::get<I>(std::declval<Tuple>()).second)>>>...};
+
+			std::size_t minimum = 0;
+
+			for (std::size_t index = 0; index < optional_field.size(); ++index)
+			{
+				if (!optional_field[index]) minimum = index + 1;
+			}
+
+			return minimum;
+		}
 
 		inline Value with_variant_tag(Value schema, const char* tag, const char* name);
 
@@ -1052,6 +1085,14 @@ namespace jw
 	{
 	};
 
+	template <class T, class = void> struct has_array_traits : std::false_type
+	{
+	};
+
+	template <class T> struct has_array_traits<T, std::void_t<decltype(ArrayTraits<T>::fields())>> : std::true_type
+	{
+	};
+
 	template <class T, class = void> struct has_enum_traits : std::false_type
 	{
 	};
@@ -1128,6 +1169,95 @@ namespace jw
 			constexpr std::size_t count = std::tuple_size_v<decltype(StructTraits<T>::fields())>;
 
 			return detail::schema_from_struct<T>(StructTraits<T>::fields(), std::make_index_sequence<count>{});
+		}
+	};
+
+	// Encode a registered tuple. Trailing empty optionals are omitted.
+	// An empty optional before a later present field stays as JSON null.
+	template <class T, class Tuple, std::size_t... I>
+	Value encode_array_fields(const T& object, const Tuple& fields, std::index_sequence<I...> /* indices */)
+	{
+		constexpr std::size_t count = sizeof...(I);
+		std::size_t end = count;
+
+		(([&] {
+			constexpr std::size_t index = count - 1 - I;
+			using Field = std::remove_cv_t<
+				std::remove_reference_t<decltype(object.*(std::get<index>(fields).second))>>;
+
+			if constexpr (is_optional_v<Field>)
+			{
+				if (end == index + 1 && !(object.*(std::get<index>(fields).second)).has_value()) end = index;
+			}
+		}()),
+			...);
+
+		Value result = Value::array();
+		std::size_t index = 0;
+
+		(([&] {
+			if (index < end) result.push(object.*(std::get<I>(fields).second));
+
+			++index;
+		}()),
+			...);
+
+		return result;
+	}
+
+	// Decode a registered tuple. Missing tail slots stay value-initialized.
+	template <class T, class Tuple, std::size_t... I>
+	T decode_array_fields(const Value& value, const Tuple& fields, std::index_sequence<I...> indices)
+	{
+		constexpr std::size_t count = sizeof...(I);
+		constexpr std::size_t minimum = detail::array_min_length<T, Tuple>(indices);
+
+		if (value.size() < minimum || value.size() > count)
+		{
+			throw type_error("JSON array length is outside the registered range");
+		}
+
+		T result{};
+		std::size_t index = 0;
+
+		(([&] {
+			using Field = std::remove_cv_t<
+				std::remove_reference_t<decltype(result.*(std::get<I>(fields).second))>>;
+
+			if (index < value.size()) result.*(std::get<I>(fields).second) = value.at<Field>(index);
+
+			++index;
+		}()),
+			...);
+
+		return result;
+	}
+
+	// Registered tuple converter.
+	template <class T> struct Converter<T, std::enable_if_t<has_array_traits<T>::value>>
+	{
+
+		static Value encode(const T& object)
+		{
+			constexpr std::size_t count = std::tuple_size_v<decltype(ArrayTraits<T>::fields())>;
+
+			return encode_array_fields(object, ArrayTraits<T>::fields(), std::make_index_sequence<count>{});
+		}
+
+		static T decode(const Value& value)
+		{
+			if (!value.is_array()) throw type_error("Expected JSON array for registered tuple");
+
+			constexpr std::size_t count = std::tuple_size_v<decltype(ArrayTraits<T>::fields())>;
+
+			return decode_array_fields<T>(value, ArrayTraits<T>::fields(), std::make_index_sequence<count>{});
+		}
+
+		static Value schema()
+		{
+			constexpr std::size_t count = std::tuple_size_v<decltype(ArrayTraits<T>::fields())>;
+
+			return detail::schema_from_array<T>(ArrayTraits<T>::fields(), std::make_index_sequence<count>{});
 		}
 	};
 
@@ -1344,6 +1474,15 @@ namespace jw
 		{
 		};
 
+		template <class T, class = void> struct has_array_type_name : std::false_type
+		{
+		};
+
+		template <class T>
+		struct has_array_type_name<T, std::void_t<decltype(ArrayTraits<T>::type_name())>> : std::true_type
+		{
+		};
+
 		template <class T, class = void> struct has_enum_type_name : std::false_type
 		{
 		};
@@ -1372,14 +1511,18 @@ namespace jw
 		};
 
 		template <class T>
-		inline constexpr bool is_schema_named_v = has_struct_traits<T>::value || has_enum_traits<T>::value
-			|| has_variant_traits<T>::value;
+		inline constexpr bool is_schema_named_v = has_struct_traits<T>::value || has_array_traits<T>::value
+			|| has_enum_traits<T>::value || has_variant_traits<T>::value;
 
 		template <class T> void set_schema_title(Value& schema)
 		{
 			if constexpr (has_struct_traits<T>::value)
 			{
 				if constexpr (has_struct_type_name<T>::value) schema.set("title", StructTraits<T>::type_name());
+			}
+			else if constexpr (has_array_traits<T>::value)
+			{
+				if constexpr (has_array_type_name<T>::value) schema.set("title", ArrayTraits<T>::type_name());
 			}
 			else if constexpr (has_enum_traits<T>::value)
 			{
@@ -1396,6 +1539,10 @@ namespace jw
 			if constexpr (has_struct_traits<T>::value && has_struct_type_name<T>::value)
 			{
 				return StructTraits<T>::type_name();
+			}
+			else if constexpr (has_array_traits<T>::value && has_array_type_name<T>::value)
+			{
+				return ArrayTraits<T>::type_name();
 			}
 			else if constexpr (has_enum_traits<T>::value && has_enum_type_name<T>::value)
 			{
@@ -1521,6 +1668,38 @@ namespace jw
 
 			if (body.has_key("required")) result.set("required", body["required"]);
 
+			return result;
+		}
+
+		template <class T, class Tuple, std::size_t... I>
+		Value schema_from_array(const Tuple& fields, std::index_sequence<I...> indices)
+		{
+			Value prefix = Value::array();
+
+			auto add = [&](const char* name, auto member) {
+				using Field = std::remove_cv_t<std::remove_reference_t<decltype(std::declval<T>().*member)>>;
+				Value child = schema_of<Field>();
+				Value described = Value::object();
+				described.set("description", name);
+
+				child.for_each_member([&](Value key, Value item) {
+					const std::string key_text = from_json<std::string>(key);
+
+					if (key_text != "description") described.set(key_text, item);
+				});
+
+				prefix.push(std::move(described));
+			};
+
+			(add(std::get<I>(fields).first, std::get<I>(fields).second), ...);
+
+			Value result = Value::object();
+			set_schema_title<T>(result);
+			result.set("type", "array");
+			result.set("prefixItems", prefix);
+			result.set("items", false);
+			result.set("minItems", array_min_length<T, Tuple>(indices));
+			result.set("maxItems", sizeof...(I));
 			return result;
 		}
 
@@ -1650,6 +1829,23 @@ namespace jw
 			static constexpr const char* type_name() { return #TYPE; }                                      \
 			static constexpr auto fields() { return std::make_tuple(JW_DETAIL_FIELDS(TYPE, __VA_ARGS__)); } \
 		};                                                                                                  \
+	}
+
+// ============================================================
+// JW_JSON_ARRAY macro (up to 8 fields)
+// Invoke at global namespace scope.
+// Fields are a JSON tuple in this order. The minimum length
+// runs through the last field that is not std::optional.
+// ============================================================
+
+#define JW_JSON_ARRAY(TYPE, ...)                                                                           \
+	namespace jw                                                                                           \
+	{                                                                                                      \
+		template <> struct ArrayTraits<TYPE>                                                               \
+		{                                                                                                  \
+			static constexpr const char* type_name() { return #TYPE; }                                     \
+			static constexpr auto fields() { return std::make_tuple(JW_DETAIL_FIELDS(TYPE, __VA_ARGS__)); } \
+		};                                                                                                 \
 	}
 
 // ============================================================

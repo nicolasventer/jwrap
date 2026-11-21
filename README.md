@@ -11,6 +11,7 @@ jwrap is a **C++ library** that lets you **read and write JSON** and convert bet
 - `std::optional`: a missing key or JSON null reads as `nullopt`, and an empty optional is omitted from an object
 - `std::vector`, `std::array`, C arrays, `std::map`, and `std::vector<std::pair>`
 - Struct fields registered with `JW_JSON_OBJECT` (up to 8 fields), or a custom `jw::Converter`
+- Tuple fields registered with `JW_JSON_ARRAY` (up to 8 fields). The minimum length runs through the last field that is not `std::optional`, and each position is labeled with `description`
 - Enums registered with `JW_JSON_ENUM` (up to 32 enumerators), read and written as JSON strings
 - `std::variant` registered with `JW_JSON_VARIANT_TAG` (a field value selects the alternative) or `JW_JSON_VARIANT_KEY` (a single key selects it), up to 8 alternatives
 - JSON Schema draft 2020-12 from those registrations through `jw::schema::of<T>()`, or from `Converter<T>::schema()`
@@ -43,12 +44,13 @@ You can instead pass `jwrap/yyjson/yyjson.c` to the compiler and include only th
 
 Build the example with `build.bat` or `./build.sh`.
 
-Content of [example.cpp](example.cpp)
+Content of [example_macros.cpp](example_macros.cpp)
 
 ```cpp
 #include "jwrap/jwrap.hpp"
 #include "jwrap/yyjson/yyjson.c"
 #include <iostream>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -68,6 +70,15 @@ enum class Role
 
 JW_JSON_ENUM(Role, Admin, Member)
 
+struct Point
+{
+	int x;
+	std::optional<int> y;
+	std::optional<int> z;
+};
+
+JW_JSON_ARRAY(Point, x, y, z)
+
 struct User
 {
 	std::string name;
@@ -75,13 +86,14 @@ struct User
 	Role role;
 	std::vector<std::string> tags;
 	Address address;
+	Point position;
 };
 
-JW_JSON_OBJECT(User, name, age, role, tags, address)
+JW_JSON_OBJECT(User, name, age, role, tags, address, position)
 
 int main()
 {
-	User original{"Alice", 30, Role::Member, {"cpp", "yyjson"}, {"Singapore", 123456}};
+	User original{"Alice", 30, Role::Member, {"cpp", "yyjson"}, {"Singapore", 123456}, {1, 2, std::nullopt}};
 
 	// C++ struct -> JSON
 	auto value = jw::to_value(original);
@@ -98,6 +110,9 @@ int main()
 	std::cout << (copy.role == Role::Admin ? "Admin" : "Member") << '\n';
 	std::cout << copy.address.city << '\n';
 	std::cout << copy.tags.at(0) << '\n';
+	std::cout << copy.position.x << '\n';
+	std::cout << *copy.position.y << '\n';
+	std::cout << (copy.position.z.has_value() ? "z set" : "z empty") << '\n';
 }
 ```
 
@@ -115,7 +130,11 @@ int main()
     "address": {
         "city": "Singapore",
         "zip": 123456
-    }
+    },
+    "position": [
+        1,
+        2
+    ]
 }
 
 Alice
@@ -123,6 +142,9 @@ Alice
 Member
 Singapore
 cpp
+1
+2
+z empty
 ```
 
 ## Testing
@@ -220,6 +242,20 @@ struct Address {
 JW_JSON_OBJECT(Address, city, zip)
 ```
 
+`JW_JSON_ARRAY` is invoked at global scope and accepts up to 8 fields. The value is a JSON array in field order, like a TypeScript tuple `[x: number, y?: number, z?: number]`. Each position's schema `description` is the field name. The minimum length is one past the last field that is not `std::optional`. Trailing empty optionals are omitted. An empty optional before a later present field is JSON null. A shorter array, a longer array, or a value that is not an array throws `jw::type_error`.
+
+```cpp
+struct Point {
+    int x;
+    std::optional<int> y;
+    std::optional<int> z;
+};
+
+JW_JSON_ARRAY(Point, x, y, z)
+```
+
+`{1, std::nullopt, std::nullopt}` is `[1]`. `{1, 2, std::nullopt}` is `[1, 2]`. `{1, 2, 3}` is `[1, 2, 3]`. `{1, std::nullopt, 3}` is `[1, null, 3]`.
+
 `JW_JSON_ENUM` is invoked at global scope and accepts up to 32 enumerators. Each value is read and written as a JSON string of the enumerator name. A JSON number, an unknown name, or an unlisted enumerator throws `jw::type_error`.
 
 ```cpp
@@ -272,7 +308,7 @@ For a type these macros do not cover, specialize `jw::Converter<T>` with `encode
 
 This is how to create a custom converter. `Point` is stored as `[x, y]` through `jw::Converter<Point>`.
 
-Content of [example2.cpp](example2.cpp)
+Content of [example_converter.cpp](example_converter.cpp)
 
 ```cpp
 #include "jwrap/jwrap.hpp"
@@ -379,7 +415,7 @@ origin
 
 ### JSON Schema
 
-`jw::schema::of<T>()` returns a JSON Schema draft 2020-12 document. Types registered with `JW_JSON_OBJECT`, `JW_JSON_ENUM`, `JW_JSON_VARIANT_TAG`, or `JW_JSON_VARIANT_KEY` need no extra registration. Only the outermost `of<T>()` sets `$schema`.
+`jw::schema::of<T>()` returns a JSON Schema draft 2020-12 document. Types registered with `JW_JSON_OBJECT`, `JW_JSON_ARRAY`, `JW_JSON_ENUM`, `JW_JSON_VARIANT_TAG`, or `JW_JSON_VARIANT_KEY` need no extra registration. Only the outermost `of<T>()` sets `$schema`.
 
 ```cpp
 jw::Value schema = jw::schema::of<User>();
@@ -429,6 +465,41 @@ std::string text = jw::stringify(schema, true);
                 "city",
                 "zip"
             ]
+        },
+        "position": {
+            "title": "Point",
+            "type": "array",
+            "prefixItems": [
+                {
+                    "description": "x",
+                    "type": "integer"
+                },
+                {
+                    "description": "y",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                },
+                {
+                    "description": "z",
+                    "anyOf": [
+                        {
+                            "type": "integer"
+                        },
+                        {
+                            "type": "null"
+                        }
+                    ]
+                }
+            ],
+            "items": false,
+            "minItems": 1,
+            "maxItems": 3
         }
     },
     "required": [
@@ -436,12 +507,13 @@ std::string text = jw::stringify(schema, true);
         "age",
         "role",
         "tags",
-        "address"
+        "address",
+        "position"
     ]
 }
 ```
 
-A struct is an object. Fields stay in registration order. A `std::optional` field is left out of `required`. Every other field is required. The optional schema accepts the inner type or null, because a missing key and JSON null both read as `nullopt`. Extra object keys stay allowed. A `std::vector` is an array of its element schema. `std::array` and a C array set `minItems` and `maxItems`. A `std::map` or `std::vector<std::pair>` is an object whose `additionalProperties` is the value schema. An enum is a string limited to the registered names, in registration order.
+A struct is an object. Fields stay in registration order. A `std::optional` field is left out of `required`. Every other field is required. The optional schema accepts the inner type or null, because a missing key and JSON null both read as `nullopt`. Extra object keys stay allowed. A type registered with `JW_JSON_ARRAY` is a tuple. `prefixItems` follows field order, and each entry's `description` is the field name. `items` is false. `minItems` counts through the last field that is not `std::optional`, and `maxItems` is the field count. An optional position accepts the inner type or null, because a present null and a missing tail slot both read as `nullopt`. A `std::vector` is an array of its element schema. `std::array` and a C array set `minItems` and `maxItems`. A `std::map` or `std::vector<std::pair>` is an object whose `additionalProperties` is the value schema. An enum is a string limited to the registered names, in registration order.
 
 A tag variant is `oneOf`. Each branch is that alternative's object schema plus a `const` tag, and the tag is required. A key variant is `oneOf` single-key objects, and each branch forbids other keys. A tagged alternative has to encode as an object, or building the schema throws `jw::type_error`.
 

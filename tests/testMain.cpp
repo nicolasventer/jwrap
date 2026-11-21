@@ -154,6 +154,47 @@ using Eight = std::variant<std::array<int, 1>,
 
 JW_JSON_VARIANT_KEY(Eight, a, b, c, d, e, f, g, h)
 
+struct TuplePoint
+{
+	int x;
+	std::optional<int> y;
+	std::optional<int> z;
+};
+
+JW_JSON_ARRAY(TuplePoint, x, y, z)
+
+struct TailRequired
+{
+	std::optional<int> a;
+	int b;
+};
+
+JW_JSON_ARRAY(TailRequired, a, b)
+
+struct AllOptional
+{
+	std::optional<int> a;
+	std::optional<int> b;
+};
+
+JW_JSON_ARRAY(AllOptional, a, b)
+
+struct Placed
+{
+	std::string name;
+	TuplePoint position;
+};
+
+JW_JSON_OBJECT(Placed, name, position)
+
+struct Chain
+{
+	int n;
+	std::vector<Chain> rest;
+};
+
+JW_JSON_ARRAY(Chain, n, rest)
+
 struct SchemaPoint
 {
 	int x;
@@ -727,6 +768,105 @@ TEST_CASE("json schema helpers")
 	CHECK(defs_text.find("\"Node\"") < defs_text.find("\"Leaf\""));
 
 	CHECK_THROWS_AS(jw::schema::defs(jw::array(), {{"A", jw::schema::string()}}), jw::type_error);
+}
+
+TEST_CASE("tuples registered with JW_JSON_ARRAY")
+{
+	const TuplePoint only_x{1, std::nullopt, std::nullopt};
+	CHECK(jw::to_value(only_x).dump() == "[1]");
+	const TuplePoint read_x = jw::from_json<TuplePoint>(jw::parse("[1]"));
+	CHECK(read_x.x == 1);
+	CHECK_FALSE(read_x.y.has_value());
+	CHECK_FALSE(read_x.z.has_value());
+
+	const TuplePoint xy{1, 2, std::nullopt};
+	CHECK(jw::to_value(xy).dump() == "[1,2]");
+	const TuplePoint read_xy = jw::from_json<TuplePoint>(jw::parse("[1,2]"));
+	CHECK(read_xy.x == 1);
+	REQUIRE(read_xy.y.has_value());
+	CHECK(*read_xy.y == 2);
+	CHECK_FALSE(read_xy.z.has_value());
+
+	const TuplePoint full{1, 2, 3};
+	CHECK(jw::to_value(full).dump() == "[1,2,3]");
+	const TuplePoint read_full = jw::from_json<TuplePoint>(jw::parse("[1,2,3]"));
+	CHECK(read_full.x == 1);
+	REQUIRE(read_full.y.has_value());
+	CHECK(*read_full.y == 2);
+	REQUIRE(read_full.z.has_value());
+	CHECK(*read_full.z == 3);
+
+	const TuplePoint hole{1, std::nullopt, 3};
+	CHECK(jw::to_value(hole).dump() == "[1,null,3]");
+	const TuplePoint read_hole = jw::from_json<TuplePoint>(jw::parse("[1,null,3]"));
+	CHECK(read_hole.x == 1);
+	CHECK_FALSE(read_hole.y.has_value());
+	REQUIRE(read_hole.z.has_value());
+	CHECK(*read_hole.z == 3);
+
+	const TailRequired tail{std::nullopt, 5};
+	CHECK(jw::to_value(tail).dump() == "[null,5]");
+	const TailRequired read_tail = jw::from_json<TailRequired>(jw::parse("[null,5]"));
+	CHECK_FALSE(read_tail.a.has_value());
+	CHECK(read_tail.b == 5);
+	CHECK(jw::schema::of<TailRequired>().get<int>("minItems") == 2);
+	CHECK_THROWS_AS(jw::parse("[5]").get<TailRequired>(), jw::type_error);
+
+	const AllOptional empty{std::nullopt, std::nullopt};
+	CHECK(jw::to_value(empty).dump() == "[]");
+	const AllOptional read_empty = jw::from_json<AllOptional>(jw::parse("[]"));
+	CHECK_FALSE(read_empty.a.has_value());
+	CHECK_FALSE(read_empty.b.has_value());
+	const AllOptional hole_then_value{std::nullopt, 2};
+	CHECK(jw::to_value(hole_then_value).dump() == "[null,2]");
+	CHECK(jw::schema::of<AllOptional>().get<int>("minItems") == 0);
+	CHECK(jw::schema::of<AllOptional>().get<int>("maxItems") == 2);
+
+	CHECK_THROWS_AS(jw::parse("[]").get<TuplePoint>(), jw::type_error);
+	CHECK_THROWS_AS(jw::parse("[1,2,3,4]").get<TuplePoint>(), jw::type_error);
+	CHECK_THROWS_AS(jw::parse("{}").get<TuplePoint>(), jw::type_error);
+	CHECK_THROWS_AS(jw::parse("[null]").get<TuplePoint>(), jw::type_error);
+
+	const auto schema = jw::schema::of<TuplePoint>();
+	CHECK(schema.get<std::string>("title") == "TuplePoint");
+	CHECK(schema.get<std::string>("type") == "array");
+	CHECK(schema["prefixItems"].size() == 3);
+	CHECK(schema["prefixItems"][0].get<std::string>("description") == "x");
+	CHECK(schema["prefixItems"][0].get<std::string>("type") == "integer");
+	CHECK(schema["prefixItems"][1].get<std::string>("description") == "y");
+	CHECK(schema["prefixItems"][1]["anyOf"][0].get<std::string>("type") == "integer");
+	CHECK(schema["prefixItems"][1]["anyOf"][1].get<std::string>("type") == "null");
+	CHECK(schema["prefixItems"][2].get<std::string>("description") == "z");
+	CHECK(schema["prefixItems"][2]["anyOf"][0].get<std::string>("type") == "integer");
+	CHECK(schema.get<bool>("items") == false);
+	CHECK(schema.get<int>("minItems") == 1);
+	CHECK(schema.get<int>("maxItems") == 3);
+	CHECK_FALSE(schema["prefixItems"][0].has_key("$schema"));
+
+	const Placed placed{"origin", {1, 2, std::nullopt}};
+	const auto placed_value = jw::to_value(placed);
+	CHECK(placed_value.get<std::string>("name") == "origin");
+	CHECK(placed_value["position"].dump() == "[1,2]");
+	const Placed placed_copy = jw::from_json<Placed>(placed_value);
+	CHECK(placed_copy.name == "origin");
+	CHECK(placed_copy.position.x == 1);
+	REQUIRE(placed_copy.position.y.has_value());
+	CHECK(*placed_copy.position.y == 2);
+	CHECK_FALSE(placed_copy.position.z.has_value());
+
+	const auto placed_schema = jw::schema::of<Placed>();
+	CHECK(placed_schema["properties"]["position"].get<std::string>("title") == "TuplePoint");
+	CHECK(placed_schema["properties"]["position"]["prefixItems"][0].get<std::string>("description") == "x");
+	CHECK(placed_schema["required"].at<std::string>(1) == "position");
+
+	const auto chain = jw::schema::of<Chain>();
+	CHECK(chain.get<std::string>("title") == "Chain");
+	CHECK(chain["prefixItems"][1].get<std::string>("description") == "rest");
+	CHECK(chain["prefixItems"][1]["items"].get<std::string>("$ref") == "#/$defs/Chain");
+	CHECK(chain["$defs"]["Chain"].get<std::string>("title") == "Chain");
+	CHECK(chain["$defs"]["Chain"]["prefixItems"][1]["items"].get<std::string>("$ref") == "#/$defs/Chain");
+	CHECK(chain.get<int>("minItems") == 2);
+	CHECK(chain.get<int>("maxItems") == 2);
 }
 
 TEST_CASE("yyjson pointers refer to the owned mutable document")
