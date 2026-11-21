@@ -265,6 +265,104 @@ namespace jw
 	};
 }
 
+struct Address
+{
+	std::string city;
+	int zip;
+};
+
+JW_JSON_OBJECT(Address, city, zip)
+
+struct LabeledAddress : Address
+{
+	std::string label;
+};
+
+JW_JSON_OBJECT_DERIVED(LabeledAddress, Address, label)
+
+struct MarkedAddress : LabeledAddress
+{
+	std::string mark;
+};
+
+JW_JSON_OBJECT_DERIVED(MarkedAddress, LabeledAddress, mark)
+
+struct PostalAddress : Address
+{
+};
+
+JW_JSON_OBJECT_DERIVED(PostalAddress, Address)
+
+struct Point
+{
+	int x;
+	std::optional<int> y;
+	std::optional<int> z;
+};
+
+JW_JSON_ARRAY(Point, x, y, z)
+
+struct WeightedPoint : Point
+{
+	std::optional<int> w;
+};
+
+JW_JSON_ARRAY_DERIVED(WeightedPoint, Point, w)
+
+struct LabeledPoint : Point
+{
+	std::string label;
+};
+
+JW_JSON_ARRAY_DERIVED(LabeledPoint, Point, label)
+
+struct MarkedPoint : WeightedPoint
+{
+	std::string label;
+};
+
+JW_JSON_ARRAY_DERIVED(MarkedPoint, WeightedPoint, label)
+
+struct SamePoint : Point
+{
+};
+
+JW_JSON_ARRAY_DERIVED(SamePoint, Point)
+
+struct Place : std::variant<Address, Point>
+{
+	using variant::variant;
+};
+
+JW_JSON_VARIANT_KEY(Place, address, point)
+
+struct AddressKind : std::variant<Address, LabeledAddress>
+{
+	using variant::variant;
+};
+
+JW_JSON_VARIANT_TAG(AddressKind, type, address, labeled)
+
+using AddressKindAlias = std::variant<Address, LabeledAddress>;
+
+JW_JSON_VARIANT_TAG(AddressKindAlias, type, address, labeled)
+
+struct Item;
+
+struct Repeat
+{
+	std::vector<Item> items;
+};
+
+JW_JSON_OBJECT(Repeat, items)
+
+struct Item : std::variant<std::string, Repeat>
+{
+	using variant::variant;
+};
+
+JW_JSON_VARIANT_KEY(Item, text, repeat)
+
 TEST_CASE("parse errors and read flags")
 {
 	CHECK_THROWS_AS(jw::parse("{"), jw::parse_error);
@@ -867,6 +965,167 @@ TEST_CASE("tuples registered with JW_JSON_ARRAY")
 	CHECK(chain["$defs"]["Chain"]["prefixItems"][1]["items"].get<std::string>("$ref") == "#/$defs/Chain");
 	CHECK(chain.get<int>("minItems") == 2);
 	CHECK(chain.get<int>("maxItems") == 2);
+}
+
+TEST_CASE("objects registered with JW_JSON_OBJECT_DERIVED reuse base fields")
+{
+	const LabeledAddress original{{"Singapore", 123456}, "home"};
+	CHECK(jw::to_value(original).dump() == R"({"city":"Singapore","zip":123456,"label":"home"})");
+
+	const LabeledAddress copy = jw::from_json<LabeledAddress>(jw::to_value(original));
+	CHECK(copy.city == "Singapore");
+	CHECK(copy.zip == 123456);
+	CHECK(copy.label == "home");
+
+	const Address base{"Singapore", 123456};
+	CHECK(jw::to_value(base).dump() == R"({"city":"Singapore","zip":123456})");
+	const Address base_copy = jw::from_json<Address>(jw::parse(R"({"city":"Singapore","zip":123456})"));
+	CHECK(base_copy.city == "Singapore");
+	CHECK(base_copy.zip == 123456);
+
+	const MarkedAddress marked{{{"Singapore", 123456}, "home"}, "pin"};
+	CHECK(jw::to_value(marked).dump() == R"({"city":"Singapore","zip":123456,"label":"home","mark":"pin"})");
+	const MarkedAddress marked_copy = jw::from_json<MarkedAddress>(jw::to_value(marked));
+	CHECK(marked_copy.city == "Singapore");
+	CHECK(marked_copy.label == "home");
+	CHECK(marked_copy.mark == "pin");
+
+	const PostalAddress postal{{"Singapore", 123456}};
+	CHECK(jw::to_value(postal).dump() == jw::to_value(base).dump());
+	const PostalAddress postal_copy = jw::from_json<PostalAddress>(jw::parse(R"({"city":"Singapore","zip":123456})"));
+	CHECK(postal_copy.city == "Singapore");
+	CHECK(postal_copy.zip == 123456);
+
+	CHECK_THROWS_AS(jw::parse(R"({"zip":123456,"label":"home"})").get<LabeledAddress>(), jw::missing_key);
+
+	const auto schema = jw::schema::of<LabeledAddress>();
+	CHECK(schema.get<std::string>("title") == "LabeledAddress");
+	const std::string properties = schema["properties"].dump();
+	CHECK(properties.find("\"city\"") < properties.find("\"zip\""));
+	CHECK(properties.find("\"zip\"") < properties.find("\"label\""));
+	CHECK(schema["required"].size() == 3);
+	CHECK(schema["required"].at<std::string>(0) == "city");
+	CHECK(schema["required"].at<std::string>(1) == "zip");
+	CHECK(schema["required"].at<std::string>(2) == "label");
+	CHECK(jw::schema::of<Address>().get<std::string>("title") == "Address");
+	CHECK(jw::schema::of<PostalAddress>().get<std::string>("title") == "PostalAddress");
+}
+
+TEST_CASE("arrays registered with JW_JSON_ARRAY_DERIVED reuse base positions")
+{
+	const WeightedPoint only_x{{1, std::nullopt, std::nullopt}, std::nullopt};
+	const WeightedPoint with_y{{1, 2, std::nullopt}, std::nullopt};
+	const WeightedPoint with_z{{1, std::nullopt, 3}, std::nullopt};
+	const WeightedPoint with_w{{1, std::nullopt, std::nullopt}, 4};
+
+	CHECK(jw::to_value(only_x).dump() == "[1]");
+	CHECK(jw::to_value(with_y).dump() == "[1,2]");
+	CHECK(jw::to_value(with_z).dump() == "[1,null,3]");
+	CHECK(jw::to_value(with_w).dump() == "[1,null,null,4]");
+
+	const WeightedPoint copy = jw::from_json<WeightedPoint>(jw::parse("[1,null,null,4]"));
+	CHECK(copy.x == 1);
+	CHECK_FALSE(copy.y.has_value());
+	CHECK_FALSE(copy.z.has_value());
+	REQUIRE(copy.w.has_value());
+	CHECK(*copy.w == 4);
+
+	const auto weighted = jw::schema::of<WeightedPoint>();
+	CHECK(weighted.get<std::string>("title") == "WeightedPoint");
+	CHECK(weighted["prefixItems"][0].get<std::string>("description") == "x");
+	CHECK(weighted["prefixItems"][1].get<std::string>("description") == "y");
+	CHECK(weighted["prefixItems"][2].get<std::string>("description") == "z");
+	CHECK(weighted["prefixItems"][3].get<std::string>("description") == "w");
+	CHECK(weighted.get<int>("minItems") == 1);
+	CHECK(weighted.get<int>("maxItems") == 4);
+
+	const LabeledPoint labeled{{1, std::nullopt, std::nullopt}, "home"};
+	CHECK(jw::to_value(labeled).dump() == R"([1,null,null,"home"])");
+	CHECK(jw::from_json<LabeledPoint>(jw::parse(R"([1,null,null,"home"])")).label == "home");
+	CHECK_THROWS_AS(jw::parse("[1,null,null]").get<LabeledPoint>(), jw::type_error);
+
+	const auto labeled_schema = jw::schema::of<LabeledPoint>();
+	CHECK(labeled_schema.get<std::string>("title") == "LabeledPoint");
+	CHECK(labeled_schema["prefixItems"][3].get<std::string>("description") == "label");
+	CHECK(labeled_schema.get<int>("minItems") == 4);
+	CHECK(labeled_schema.get<int>("maxItems") == 4);
+
+	const MarkedPoint marked{{{1, std::nullopt, std::nullopt}, 4}, "home"};
+	CHECK(jw::to_value(marked).dump() == R"([1,null,null,4,"home"])");
+	const MarkedPoint marked_copy = jw::from_json<MarkedPoint>(jw::to_value(marked));
+	CHECK(marked_copy.x == 1);
+	REQUIRE(marked_copy.w.has_value());
+	CHECK(*marked_copy.w == 4);
+	CHECK(marked_copy.label == "home");
+	CHECK_THROWS_AS(jw::parse("[1,null,null,4]").get<MarkedPoint>(), jw::type_error);
+
+	const auto marked_schema = jw::schema::of<MarkedPoint>();
+	CHECK(marked_schema["prefixItems"][0].get<std::string>("description") == "x");
+	CHECK(marked_schema["prefixItems"][3].get<std::string>("description") == "w");
+	CHECK(marked_schema["prefixItems"][4].get<std::string>("description") == "label");
+	CHECK(marked_schema.get<int>("minItems") == 5);
+	CHECK(marked_schema.get<int>("maxItems") == 5);
+
+	const Point point{1, 2, std::nullopt};
+	const SamePoint same{{1, 2, std::nullopt}};
+	CHECK(jw::to_value(same).dump() == jw::to_value(point).dump());
+	CHECK(jw::from_json<SamePoint>(jw::parse("[1]")).x == 1);
+	CHECK(jw::schema::of<SamePoint>().get<std::string>("title") == "SamePoint");
+	CHECK(jw::schema::of<SamePoint>().get<int>("minItems") == 1);
+	CHECK(jw::schema::of<SamePoint>().get<int>("maxItems") == 3);
+}
+
+TEST_CASE("variants that inherit std::variant read and write through the base")
+{
+	const Place address{Address{"Singapore", 123456}};
+	CHECK(jw::to_value(address).dump() == R"({"address":{"city":"Singapore","zip":123456}})");
+	const Place address_copy = jw::from_json<Place>(jw::to_value(address));
+	REQUIRE(std::holds_alternative<Address>(address_copy));
+	CHECK(std::get<Address>(address_copy).city == "Singapore");
+	CHECK(std::get<Address>(address_copy).zip == 123456);
+
+	const Place point{Point{1, 2, std::nullopt}};
+	CHECK(jw::to_value(point).dump() == R"({"point":[1,2]})");
+	const Place point_copy = jw::from_json<Place>(jw::to_value(point));
+	REQUIRE(std::holds_alternative<Point>(point_copy));
+	CHECK(std::get<Point>(point_copy).x == 1);
+	REQUIRE(std::get<Point>(point_copy).y.has_value());
+	CHECK(*std::get<Point>(point_copy).y == 2);
+	CHECK_FALSE(std::get<Point>(point_copy).z.has_value());
+
+	const AddressKind labeled{LabeledAddress{{"Singapore", 123456}, "home"}};
+	const AddressKindAlias labeled_alias{LabeledAddress{{"Singapore", 123456}, "home"}};
+	CHECK(jw::to_value(labeled).dump() == jw::to_value(labeled_alias).dump());
+	CHECK(jw::to_value(labeled).dump() == R"({"city":"Singapore","zip":123456,"label":"home","type":"labeled"})");
+	const AddressKind labeled_copy = jw::from_json<AddressKind>(jw::to_value(labeled));
+	REQUIRE(std::holds_alternative<LabeledAddress>(labeled_copy));
+	CHECK(std::get<LabeledAddress>(labeled_copy).label == "home");
+
+	const AddressKind plain{Address{"Singapore", 123456}};
+	const AddressKindAlias plain_alias{Address{"Singapore", 123456}};
+	CHECK(jw::to_value(plain).dump() == jw::to_value(plain_alias).dump());
+	CHECK(jw::to_value(plain).get<std::string>("type") == "address");
+
+	const auto place_schema = jw::schema::of<Place>();
+	CHECK(place_schema.get<std::string>("title") == "Place");
+	CHECK(place_schema["oneOf"].size() == 2);
+
+	Repeat nested;
+	nested.items.push_back(Item{std::string{"a"}});
+	const Item loop{nested};
+	const auto loop_value = jw::to_value(loop);
+	CHECK(loop_value["repeat"]["items"][0].get<std::string>("text") == "a");
+	const Item loop_copy = jw::from_json<Item>(loop_value);
+	REQUIRE(std::holds_alternative<Repeat>(loop_copy));
+	REQUIRE(std::get<Repeat>(loop_copy).items.size() == 1);
+	REQUIRE(std::holds_alternative<std::string>(std::get<Repeat>(loop_copy).items[0]));
+	CHECK(std::get<std::string>(std::get<Repeat>(loop_copy).items[0]) == "a");
+
+	const auto item_schema = jw::schema::of<Item>();
+	CHECK(item_schema.get<std::string>("title") == "Item");
+	CHECK(item_schema["oneOf"][1]["properties"]["repeat"]["properties"]["items"]["items"].get<std::string>("$ref")
+		== "#/$defs/Item");
+	CHECK(item_schema["$defs"]["Item"].get<std::string>("title") == "Item");
 }
 
 TEST_CASE("yyjson pointers refer to the owned mutable document")

@@ -10,10 +10,10 @@ jwrap is a **C++ library** that lets you **read and write JSON** and convert bet
 - Typed `get`, `try_get`, `at`, and `set` / `push`, with exceptions for missing keys, type mismatches, and out-of-range numbers
 - `std::optional`: a missing key or JSON null reads as `nullopt`, and an empty optional is omitted from an object
 - `std::vector`, `std::array`, C arrays, `std::map`, and `std::vector<std::pair>`
-- Struct fields registered with `JW_JSON_OBJECT` (up to 8 fields), or a custom `jw::Converter`
-- Tuple fields registered with `JW_JSON_ARRAY` (up to 8 fields). The minimum length runs through the last field that is not `std::optional`, and each position is labeled with `description`
+- Struct fields registered with `JW_JSON_OBJECT` (up to 8 fields), `JW_JSON_OBJECT_DERIVED` to append a derived struct's fields after one public base, or a custom `jw::Converter`
+- Tuple fields registered with `JW_JSON_ARRAY` (up to 8 fields), or `JW_JSON_ARRAY_DERIVED` to append a derived tuple's positions after one public base. The minimum length runs through the last field that is not `std::optional`, and each position is labeled with `description`
 - Enums registered with `JW_JSON_ENUM` (up to 32 enumerators), read and written as JSON strings
-- `std::variant` registered with `JW_JSON_VARIANT_TAG` (a field value selects the alternative) or `JW_JSON_VARIANT_KEY` (a single key selects it), up to 8 alternatives
+- `std::variant` registered with `JW_JSON_VARIANT_TAG` (a field value selects the alternative) or `JW_JSON_VARIANT_KEY` (a single key selects it), up to 8 alternatives. The type is a using-alias or a class that publicly inherits `std::variant`
 - JSON Schema draft 2020-12 from those registrations through `jw::schema::of<T>()`, or from `Converter<T>::schema()`
 - Optional parse flags for comments and trailing commas
 - Compact output, 4-space pretty print, and 2-space pretty print
@@ -242,6 +242,18 @@ struct Address {
 JW_JSON_OBJECT(Address, city, zip)
 ```
 
+`JW_JSON_OBJECT_DERIVED` is invoked at global scope. It takes the derived type, one public base registered with `JW_JSON_OBJECT` or `JW_JSON_OBJECT_DERIVED`, and up to 8 fields of its own. Zero own fields is allowed. Inherited fields do not count toward that cap. Field order is the base fields, then the derived fields. A chain flattens the same way. The base keeps its own registration.
+
+```cpp
+struct LabeledAddress : Address {
+    std::string label;
+};
+
+JW_JSON_OBJECT_DERIVED(LabeledAddress, Address, label)
+```
+
+`{"city": "Singapore", "zip": 123456, "label": "home"}` is a `LabeledAddress`. `{"city": "Singapore", "zip": 123456}` is still an `Address`. A missing `city` or `zip` throws `jw::missing_key`.
+
 `JW_JSON_ARRAY` is invoked at global scope and accepts up to 8 fields. The value is a JSON array in field order, like a TypeScript tuple `[x: number, y?: number, z?: number]`. Each position's schema `description` is the field name. The minimum length is one past the last field that is not `std::optional`. Trailing empty optionals are omitted. An empty optional before a later present field is JSON null. A shorter array, a longer array, or a value that is not an array throws `jw::type_error`.
 
 ```cpp
@@ -256,6 +268,18 @@ JW_JSON_ARRAY(Point, x, y, z)
 
 `{1, std::nullopt, std::nullopt}` is `[1]`. `{1, 2, std::nullopt}` is `[1, 2]`. `{1, 2, 3}` is `[1, 2, 3]`. `{1, std::nullopt, 3}` is `[1, null, 3]`.
 
+`JW_JSON_ARRAY_DERIVED` appends positions the same way. The base is registered with `JW_JSON_ARRAY` or `JW_JSON_ARRAY_DERIVED`. The minimum length still runs through the last field that is not `std::optional`, across the whole list.
+
+```cpp
+struct WeightedPoint : Point {
+    std::optional<int> w;
+};
+
+JW_JSON_ARRAY_DERIVED(WeightedPoint, Point, w)
+```
+
+`{1, std::nullopt, std::nullopt, std::nullopt}` is `[1]`. `{1, std::nullopt, std::nullopt, 4}` is `[1, null, null, 4]`. A required field after those optionals extends the minimum through that field.
+
 `JW_JSON_ENUM` is invoked at global scope and accepts up to 32 enumerators. Each value is read and written as a JSON string of the enumerator name. A JSON number, an unknown name, or an unlisted enumerator throws `jw::type_error`.
 
 ```cpp
@@ -266,7 +290,7 @@ JW_JSON_ENUM(Status, Ok, Error)
 
 Specialize `jw::EnumTraits<T>` for custom names or more than 32 enumerators. `entries()` returns pairs of enumerator and name. The first match is used when two enumerators share a value.
 
-`JW_JSON_VARIANT_TAG` and `JW_JSON_VARIANT_KEY` are invoked at global scope and accept up to 8 names. The variant needs a using-alias first: `std::variant<Circle, Rect>` contains a comma, so it cannot be a macro argument. Names follow the alternative order and are written as JSON strings. The registration belongs to the variant type, so a variant is registered with only one of the two macros. Two aliases of the same `std::variant` are the same type.
+`JW_JSON_VARIANT_TAG` and `JW_JSON_VARIANT_KEY` are invoked at global scope and accept up to 8 names. The registered type is a using-alias, or a class that publicly inherits `std::variant` and its constructors (`using variant::variant`). `std::variant<Circle, Rect>` contains a comma, so it cannot be a macro argument. Names follow the alternative order and are written as JSON strings. The registration belongs to that type, so a variant is registered with only one of the two macros. Two aliases of the same `std::variant` are the same type. A derived class is a different type and needs its own registration.
 
 `JW_JSON_VARIANT_TAG` selects the alternative from the value of a field. That same object is the payload, so each alternative must encode as a JSON object. Encode writes the alternative's fields, then the tag. A missing tag throws `jw::missing_key`. An unknown name, a tag that is not a string, a value that is not an object, or an alternative that does not encode as an object throws `jw::type_error`. The tag key should not also be a field of the alternative, because encode replaces that key with the tag.
 
@@ -299,6 +323,18 @@ JW_JSON_VARIANT_KEY(Setting, number, text)
 ```
 
 This reads and writes `{"number": 1}` and `{"text": "hi"}`. The same macro with `circle` and `rect` reads and writes `{"circle": {"radius": 0.5}}`.
+
+A class that inherits the variant uses the same macro:
+
+```cpp
+struct Place : std::variant<Address, Point> {
+    using variant::variant;
+};
+
+JW_JSON_VARIANT_KEY(Place, address, point)
+```
+
+`Place{Address{"Singapore", 123456}}` writes `{"address": {"city": "Singapore", "zip": 123456}}`. `Place{Point{1, 2, std::nullopt}}` writes `{"point": [1, 2]}`.
 
 Specialize `jw::VariantTraits<T>` for more than 8 alternatives, or for a name that is not an identifier. `names()` returns the JSON names in alternative order. Tag mode also defines `tag()` as the discriminator field name. Key mode omits `tag()`.
 
@@ -415,7 +451,7 @@ origin
 
 ### JSON Schema
 
-`jw::schema::of<T>()` returns a JSON Schema draft 2020-12 document. Types registered with `JW_JSON_OBJECT`, `JW_JSON_ARRAY`, `JW_JSON_ENUM`, `JW_JSON_VARIANT_TAG`, or `JW_JSON_VARIANT_KEY` need no extra registration. Only the outermost `of<T>()` sets `$schema`.
+`jw::schema::of<T>()` returns a JSON Schema draft 2020-12 document. Types registered with `JW_JSON_OBJECT`, `JW_JSON_OBJECT_DERIVED`, `JW_JSON_ARRAY`, `JW_JSON_ARRAY_DERIVED`, `JW_JSON_ENUM`, `JW_JSON_VARIANT_TAG`, or `JW_JSON_VARIANT_KEY` need no extra registration. Only the outermost `of<T>()` sets `$schema`.
 
 ```cpp
 jw::Value schema = jw::schema::of<User>();
@@ -513,9 +549,9 @@ std::string text = jw::stringify(schema, true);
 }
 ```
 
-A struct is an object. Fields stay in registration order. A `std::optional` field is left out of `required`. Every other field is required. The optional schema accepts the inner type or null, because a missing key and JSON null both read as `nullopt`. Extra object keys stay allowed. A type registered with `JW_JSON_ARRAY` is a tuple. `prefixItems` follows field order, and each entry's `description` is the field name. `items` is false. `minItems` counts through the last field that is not `std::optional`, and `maxItems` is the field count. An optional position accepts the inner type or null, because a present null and a missing tail slot both read as `nullopt`. A `std::vector` is an array of its element schema. `std::array` and a C array set `minItems` and `maxItems`. A `std::map` or `std::vector<std::pair>` is an object whose `additionalProperties` is the value schema. An enum is a string limited to the registered names, in registration order.
+A struct is an object. Fields stay in registration order. A `std::optional` field is left out of `required`. Every other field is required. The optional schema accepts the inner type or null, because a missing key and JSON null both read as `nullopt`. Extra object keys stay allowed. A type registered with `JW_JSON_ARRAY` is a tuple. `prefixItems` follows field order, and each entry's `description` is the field name. `items` is false. `minItems` counts through the last field that is not `std::optional`, and `maxItems` is the field count. An optional position accepts the inner type or null, because a present null and a missing tail slot both read as `nullopt`. A type registered with `JW_JSON_OBJECT_DERIVED` is one object whose fields are the base fields followed by its own. A type registered with `JW_JSON_ARRAY_DERIVED` is one tuple whose positions are the base positions followed by its own. A `std::vector` is an array of its element schema. `std::array` and a C array set `minItems` and `maxItems`. A `std::map` or `std::vector<std::pair>` is an object whose `additionalProperties` is the value schema. An enum is a string limited to the registered names, in registration order.
 
-A tag variant is `oneOf`. Each branch is that alternative's object schema plus a `const` tag, and the tag is required. A key variant is `oneOf` single-key objects, and each branch forbids other keys. A tagged alternative has to encode as an object, or building the schema throws `jw::type_error`.
+A tag variant is `oneOf`. Each branch is that alternative's object schema plus a `const` tag, and the tag is required. A key variant is `oneOf` single-key objects, and each branch forbids other keys. A tagged alternative has to encode as an object, or building the schema throws `jw::type_error`. A class that inherits `std::variant` is still a `oneOf` under its own `title`.
 
 A type that contains itself, such as a node with `std::vector<Node> children`, keeps that nested occurrence as a `$ref` into `$defs`. The macros store the type name for `title` and for that `$defs` key. A hand-written traits specialization without `type_name()` produces a schema with no title. A recursive type still needs the name.
 

@@ -463,8 +463,8 @@ namespace jw
 	{
 		static_assert(!std::is_same_v<T, T>,
 			"No jw::Converter available for this type. "
-			"Use JW_JSON_OBJECT, JW_JSON_ARRAY, JW_JSON_ENUM, JW_JSON_VARIANT_TAG, JW_JSON_VARIANT_KEY, "
-			"or define a Converter specialization.");
+			"Use JW_JSON_OBJECT, JW_JSON_OBJECT_DERIVED, JW_JSON_ARRAY, JW_JSON_ARRAY_DERIVED, JW_JSON_ENUM, "
+			"JW_JSON_VARIANT_TAG, JW_JSON_VARIANT_KEY, or define a Converter specialization.");
 	};
 
 	namespace detail
@@ -1307,6 +1307,22 @@ namespace jw
 	namespace detail
 	{
 
+		// std::variant<Ts...> is a simple-template-id, so deduction also
+		// accepts a type that publicly converts to exactly one such base.
+		template <class... Ts> std::variant<Ts...> variant_base_of(const std::variant<Ts...>&);
+
+		template <class T, class = void> struct is_variant_type : std::false_type
+		{
+		};
+
+		template <class T>
+		struct is_variant_type<T, std::void_t<decltype(variant_base_of(std::declval<const T&>()))>> : std::true_type
+		{
+			using type = decltype(variant_base_of(std::declval<const T&>()));
+		};
+
+		template <class T> using variant_base_t = typename is_variant_type<T>::type;
+
 		template <class Names> constexpr bool variant_names_are_unique(const Names& names)
 		{
 			for (std::size_t i = 0; i < names.size(); ++i)
@@ -1323,15 +1339,16 @@ namespace jw
 		// Match a tag field value to an alternative, in registration order.
 		template <class Variant, std::size_t I> Variant decode_variant_tag(const Value& value, const std::string& tag)
 		{
+			using Base = variant_base_t<Variant>;
 			constexpr auto names = VariantTraits<Variant>::names();
 
-			if constexpr (I >= std::variant_size_v<Variant>)
+			if constexpr (I >= std::variant_size_v<Base>)
 			{
 				throw type_error("Unknown variant tag");
 			}
 			else if (tag == names[I])
 			{
-				return Variant(std::in_place_index<I>, from_json<std::variant_alternative_t<I, Variant>>(value));
+				return Variant(std::in_place_index<I>, from_json<std::variant_alternative_t<I, Base>>(value));
 			}
 			else
 			{
@@ -1342,15 +1359,16 @@ namespace jw
 		// Match the single object key to an alternative, in registration order.
 		template <class Variant, std::size_t I> Variant decode_variant_key(const Value& value)
 		{
+			using Base = variant_base_t<Variant>;
 			constexpr auto names = VariantTraits<Variant>::names();
 
-			if constexpr (I >= std::variant_size_v<Variant>)
+			if constexpr (I >= std::variant_size_v<Base>)
 			{
 				throw type_error("Unknown variant key");
 			}
 			else if (value.has_key(names[I]))
 			{
-				return Variant(std::in_place_index<I>, from_json<std::variant_alternative_t<I, Variant>>(value[names[I]]));
+				return Variant(std::in_place_index<I>, from_json<std::variant_alternative_t<I, Base>>(value[names[I]]));
 			}
 			else
 			{
@@ -1363,26 +1381,34 @@ namespace jw
 	// Registered variant converter.
 	// Tag mode reads a discriminator field and decodes the same object.
 	// Key mode reads the value of the single object key.
-	template <class... Ts> struct Converter<std::variant<Ts...>, std::enable_if_t<has_variant_traits<std::variant<Ts...>>::value>>
+	// T is std::variant<Ts...> or a class that publicly inherits it.
+	template <class T>
+	struct Converter<T, std::enable_if_t<has_variant_traits<T>::value && detail::is_variant_type<T>::value>>
 	{
-		using variant_type = std::variant<Ts...>;
+		using variant_type = detail::variant_base_t<T>;
 
-		static constexpr auto alternative_names = VariantTraits<variant_type>::names();
+		static constexpr auto alternative_names = VariantTraits<T>::names();
 
-		static_assert(alternative_names.size() == sizeof...(Ts), "JW_JSON_VARIANT name count must match the variant");
+		static_assert(alternative_names.size() == std::variant_size_v<variant_type>,
+			"JW_JSON_VARIANT name count must match the variant");
 		static_assert(detail::variant_names_are_unique(alternative_names), "JW_JSON_VARIANT names must be unique");
+		static_assert(std::is_constructible_v<T,
+						  std::in_place_index_t<0>,
+						  std::variant_alternative_t<0, variant_type>>,
+			"Derived variant must inherit constructors with using variant::variant");
 
-		static Value encode(const variant_type& value)
+		static Value encode(const T& value)
 		{
 			if (value.valueless_by_exception()) throw type_error("Valueless variant");
 
-			Value payload = std::visit([](const auto& alternative) { return to_value(alternative); }, value);
+			const variant_type& base = value;
+			Value payload = std::visit([](const auto& alternative) { return to_value(alternative); }, base);
 
-			if constexpr (variant_has_tag<variant_type>::value)
+			if constexpr (variant_has_tag<T>::value)
 			{
 				if (!payload.is_object()) throw type_error("Tagged variant alternative must be a JSON object");
 
-				payload.set(VariantTraits<variant_type>::tag(), alternative_names[value.index()]);
+				payload.set(VariantTraits<T>::tag(), alternative_names[value.index()]);
 				return payload;
 			}
 
@@ -1391,29 +1417,29 @@ namespace jw
 			return result;
 		}
 
-		static variant_type decode(const Value& value)
+		static T decode(const Value& value)
 		{
 			if (!value.is_object()) throw type_error("Expected JSON object for variant");
 
-			if constexpr (variant_has_tag<variant_type>::value)
+			if constexpr (variant_has_tag<T>::value)
 			{
-				const std::string tag = value.get<std::string>(VariantTraits<variant_type>::tag());
-				return detail::decode_variant_tag<variant_type, 0>(value, tag);
+				const std::string tag = value.get<std::string>(VariantTraits<T>::tag());
+				return detail::decode_variant_tag<T, 0>(value, tag);
 			}
 
 			if (value.size() != 1) throw type_error("Expected a single-key JSON object for variant");
 
-			return detail::decode_variant_key<variant_type, 0>(value);
+			return detail::decode_variant_key<T, 0>(value);
 		}
 
 		static Value schema()
 		{
 			Value branches = Value::array();
-			detail::append_variant_schemas<variant_type, 0>(branches);
+			detail::append_variant_schemas<T, 0>(branches);
 
 			Value body = detail::keyword_schema("oneOf", std::move(branches));
 			Value result = Value::object();
-			detail::set_schema_title<variant_type>(result);
+			detail::set_schema_title<T>(result);
 			result.set("oneOf", body["oneOf"]);
 			return result;
 		}
@@ -1626,9 +1652,11 @@ namespace jw
 
 		template <class Variant, std::size_t I> void append_variant_schemas(Value& branches)
 		{
-			if constexpr (I < std::variant_size_v<Variant>)
+			using Base = variant_base_t<Variant>;
+
+			if constexpr (I < std::variant_size_v<Base>)
 			{
-				using Alternative = std::variant_alternative_t<I, Variant>;
+				using Alternative = std::variant_alternative_t<I, Base>;
 				constexpr auto names = VariantTraits<Variant>::names();
 				Value alternative = schema_of<Alternative>();
 
@@ -1849,6 +1877,83 @@ namespace jw
 	}
 
 // ============================================================
+// JW_JSON_OBJECT_DERIVED and JW_JSON_ARRAY_DERIVED
+// Invoke at global namespace scope.
+// (TYPE, BASE) or (TYPE, BASE, up to 8 own fields).
+// Field order is the base registration, then own fields.
+// ============================================================
+
+#define JW_DETAIL_DERIVED_SELECT(_1, _2, _3, _4, _5, _6, _7, _8, _9, _10, NAME, ...) NAME
+
+#define JW_DETAIL_OBJECT_DERIVED(TYPE, BASE, FIELDS)                                                                       \
+	namespace jw                                                                                                           \
+	{                                                                                                                      \
+		template <> struct StructTraits<TYPE>                                                                              \
+		{                                                                                                                  \
+			static_assert(has_struct_traits<BASE>::value,                                                                  \
+				"JW_JSON_OBJECT_DERIVED base must be registered with JW_JSON_OBJECT or JW_JSON_OBJECT_DERIVED");            \
+			static_assert(std::is_convertible_v<TYPE*, const BASE*> && !std::is_same_v<TYPE, BASE>,                        \
+				"JW_JSON_OBJECT_DERIVED type must publicly inherit its base");                                             \
+			static constexpr const char* type_name() { return #TYPE; }                                                     \
+			static constexpr auto fields() { return FIELDS; }                                                              \
+		};                                                                                                                 \
+	}
+
+#define JW_DETAIL_OBJECT_DERIVED_0(TYPE, BASE) JW_DETAIL_OBJECT_DERIVED(TYPE, BASE, StructTraits<BASE>::fields())
+
+#define JW_DETAIL_OBJECT_DERIVED_FIELDS(TYPE, BASE, ...) \
+	JW_DETAIL_OBJECT_DERIVED(TYPE,                       \
+		BASE,                                            \
+		std::tuple_cat(StructTraits<BASE>::fields(), std::make_tuple(JW_DETAIL_FIELDS(TYPE, __VA_ARGS__))))
+
+#define JW_JSON_OBJECT_DERIVED(...)        \
+	JW_DETAIL_DERIVED_SELECT(__VA_ARGS__,  \
+		JW_DETAIL_OBJECT_DERIVED_FIELDS,   \
+		JW_DETAIL_OBJECT_DERIVED_FIELDS,   \
+		JW_DETAIL_OBJECT_DERIVED_FIELDS,   \
+		JW_DETAIL_OBJECT_DERIVED_FIELDS,   \
+		JW_DETAIL_OBJECT_DERIVED_FIELDS,   \
+		JW_DETAIL_OBJECT_DERIVED_FIELDS,   \
+		JW_DETAIL_OBJECT_DERIVED_FIELDS,   \
+		JW_DETAIL_OBJECT_DERIVED_FIELDS,   \
+		JW_DETAIL_OBJECT_DERIVED_0,        \
+		extra)(__VA_ARGS__)
+
+#define JW_DETAIL_ARRAY_DERIVED(TYPE, BASE, FIELDS)                                                                    \
+	namespace jw                                                                                                       \
+	{                                                                                                                  \
+		template <> struct ArrayTraits<TYPE>                                                                           \
+		{                                                                                                              \
+			static_assert(has_array_traits<BASE>::value,                                                               \
+				"JW_JSON_ARRAY_DERIVED base must be registered with JW_JSON_ARRAY or JW_JSON_ARRAY_DERIVED");           \
+			static_assert(std::is_convertible_v<TYPE*, const BASE*> && !std::is_same_v<TYPE, BASE>,                    \
+				"JW_JSON_ARRAY_DERIVED type must publicly inherit its base");                                          \
+			static constexpr const char* type_name() { return #TYPE; }                                                 \
+			static constexpr auto fields() { return FIELDS; }                                                          \
+		};                                                                                                             \
+	}
+
+#define JW_DETAIL_ARRAY_DERIVED_0(TYPE, BASE) JW_DETAIL_ARRAY_DERIVED(TYPE, BASE, ArrayTraits<BASE>::fields())
+
+#define JW_DETAIL_ARRAY_DERIVED_FIELDS(TYPE, BASE, ...) \
+	JW_DETAIL_ARRAY_DERIVED(TYPE,                       \
+		BASE,                                           \
+		std::tuple_cat(ArrayTraits<BASE>::fields(), std::make_tuple(JW_DETAIL_FIELDS(TYPE, __VA_ARGS__))))
+
+#define JW_JSON_ARRAY_DERIVED(...)        \
+	JW_DETAIL_DERIVED_SELECT(__VA_ARGS__, \
+		JW_DETAIL_ARRAY_DERIVED_FIELDS,   \
+		JW_DETAIL_ARRAY_DERIVED_FIELDS,   \
+		JW_DETAIL_ARRAY_DERIVED_FIELDS,   \
+		JW_DETAIL_ARRAY_DERIVED_FIELDS,   \
+		JW_DETAIL_ARRAY_DERIVED_FIELDS,   \
+		JW_DETAIL_ARRAY_DERIVED_FIELDS,   \
+		JW_DETAIL_ARRAY_DERIVED_FIELDS,   \
+		JW_DETAIL_ARRAY_DERIVED_FIELDS,   \
+		JW_DETAIL_ARRAY_DERIVED_0,        \
+		extra)(__VA_ARGS__)
+
+// ============================================================
 // JW_JSON_ENUM macro (up to 32 enumerators)
 // Invoke at global namespace scope.
 // ============================================================
@@ -1974,7 +2079,8 @@ namespace jw
 // ============================================================
 // JW_JSON_VARIANT_TAG and JW_JSON_VARIANT_KEY (up to 8 names)
 // Invoke at global namespace scope.
-// The variant type must be a using-alias: a comma inside the
+// The variant type is a using-alias, or a class that publicly
+// inherits std::variant and its constructors. A comma inside the
 // macro argument list would split std::variant<A, B>.
 // Names are JSON strings in alternative order.
 // ============================================================
