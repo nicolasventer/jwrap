@@ -10,7 +10,7 @@ jwrap is a **C++ library** that lets you **read and write JSON** and convert bet
 - Typed `get`, `try_get`, `at`, and `set` / `push`, with exceptions for missing keys, type mismatches, and out-of-range numbers
 - `std::optional`: a missing key or JSON null reads as `nullopt`, and an empty optional is omitted from an object
 - `std::vector`, `std::array`, C arrays, `std::map`, and `std::vector<std::pair>`
-- Struct fields registered with `JW_JSON_FIELDS` (up to 8 fields), or a custom `jw::Converter`
+- Struct fields registered with `JW_JSON_OBJECT` (up to 8 fields), or a custom `jw::Converter`
 - Enums registered with `JW_JSON_ENUM` (up to 32 enumerators), read and written as JSON strings
 - `std::variant` registered with `JW_JSON_VARIANT_TAG` (a field value selects the alternative) or `JW_JSON_VARIANT_KEY` (a single key selects it), up to 8 alternatives
 - JSON Schema draft 2020-12 from those registrations through `jw::schema::of<T>()`, or from `Converter<T>::schema()`
@@ -58,7 +58,7 @@ struct Address
 	int zip;
 };
 
-JW_JSON_FIELDS(Address, city, zip)
+JW_JSON_OBJECT(Address, city, zip)
 
 enum class Role
 {
@@ -77,7 +77,7 @@ struct User
 	Address address;
 };
 
-JW_JSON_FIELDS(User, name, age, role, tags, address)
+JW_JSON_OBJECT(User, name, age, role, tags, address)
 
 int main()
 {
@@ -209,7 +209,7 @@ Object keys must encode as JSON strings. A `std::map` is ordered by key. A `std:
 
 ### Custom types
 
-`JW_JSON_FIELDS` is invoked at global scope and accepts up to 8 fields. A `std::optional` field is omitted when empty.
+`JW_JSON_OBJECT` is invoked at global scope and accepts up to 8 fields. A `std::optional` field is omitted when empty.
 
 ```cpp
 struct Address {
@@ -217,7 +217,7 @@ struct Address {
     int zip;
 };
 
-JW_JSON_FIELDS(Address, city, zip)
+JW_JSON_OBJECT(Address, city, zip)
 ```
 
 `JW_JSON_ENUM` is invoked at global scope and accepts up to 32 enumerators. Each value is read and written as a JSON string of the enumerator name. A JSON number, an unknown name, or an unlisted enumerator throws `jw::type_error`.
@@ -244,8 +244,8 @@ struct Rect {
     double h;
 };
 
-JW_JSON_FIELDS(Circle, radius)
-JW_JSON_FIELDS(Rect, w, h)
+JW_JSON_OBJECT(Circle, radius)
+JW_JSON_OBJECT(Rect, w, h)
 
 using Shape = std::variant<Circle, Rect>;
 
@@ -314,7 +314,7 @@ struct Marker
 	Point position;
 };
 
-JW_JSON_FIELDS(Marker, name, position)
+JW_JSON_OBJECT(Marker, name, position)
 
 int main()
 {
@@ -379,7 +379,7 @@ origin
 
 ### JSON Schema
 
-`jw::schema::of<T>()` returns a JSON Schema draft 2020-12 document. Types registered with `JW_JSON_FIELDS`, `JW_JSON_ENUM`, `JW_JSON_VARIANT_TAG`, or `JW_JSON_VARIANT_KEY` need no extra registration. Only the outermost `of<T>()` sets `$schema`.
+`jw::schema::of<T>()` returns a JSON Schema draft 2020-12 document. Types registered with `JW_JSON_OBJECT`, `JW_JSON_ENUM`, `JW_JSON_VARIANT_TAG`, or `JW_JSON_VARIANT_KEY` need no extra registration. Only the outermost `of<T>()` sets `$schema`.
 
 ```cpp
 jw::Value schema = jw::schema::of<User>();

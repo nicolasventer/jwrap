@@ -21,7 +21,7 @@ struct City
 	std::string name;
 };
 
-JW_JSON_FIELDS(City, name)
+JW_JSON_OBJECT(City, name)
 
 struct Resident
 {
@@ -30,7 +30,7 @@ struct Resident
 	std::vector<std::string> tags;
 };
 
-JW_JSON_FIELDS(Resident, name, city, tags)
+JW_JSON_OBJECT(Resident, name, city, tags)
 
 enum class Status
 {
@@ -73,7 +73,7 @@ struct Task
 	std::vector<Color> colors;
 };
 
-JW_JSON_FIELDS(Task, status, note, colors)
+JW_JSON_OBJECT(Task, status, note, colors)
 
 using StringMap = std::map<std::string, int>;
 using StringPairs = std::vector<std::pair<std::string, int>>;
@@ -91,8 +91,8 @@ struct Rect
 	double h;
 };
 
-JW_JSON_FIELDS(Circle, radius)
-JW_JSON_FIELDS(Rect, w, h)
+JW_JSON_OBJECT(Circle, radius)
+JW_JSON_OBJECT(Rect, w, h)
 
 using Shape = std::variant<Circle, Rect>;
 
@@ -109,8 +109,8 @@ struct KeyRect
 	double h;
 };
 
-JW_JSON_FIELDS(KeyCircle, radius)
-JW_JSON_FIELDS(KeyRect, w, h)
+JW_JSON_OBJECT(KeyCircle, radius)
+JW_JSON_OBJECT(KeyRect, w, h)
 
 using ShapeKey = std::variant<KeyCircle, KeyRect>;
 
@@ -130,14 +130,14 @@ struct Drawing
 	Shape shape;
 };
 
-JW_JSON_FIELDS(Drawing, name, shape)
+JW_JSON_OBJECT(Drawing, name, shape)
 
 struct Lone
 {
 	int n;
 };
 
-JW_JSON_FIELDS(Lone, n)
+JW_JSON_OBJECT(Lone, n)
 
 using LoneShape = std::variant<Lone>;
 
@@ -188,7 +188,7 @@ struct SchemaMarker
 	SchemaPoint position;
 };
 
-JW_JSON_FIELDS(SchemaMarker, name, position)
+JW_JSON_OBJECT(SchemaMarker, name, position)
 
 struct BareSchema
 {
@@ -209,7 +209,7 @@ struct Node
 	std::vector<Node> children;
 };
 
-JW_JSON_FIELDS(Node, name, children)
+JW_JSON_OBJECT(Node, name, children)
 
 struct Loop
 {
@@ -373,7 +373,7 @@ TEST_CASE("optional values are omitted from objects and become null in arrays")
 	CHECK(values.at<std::optional<int>>(1).value() == 4);
 }
 
-TEST_CASE("nested structs registered with JW_JSON_FIELDS")
+TEST_CASE("nested structs registered with JW_JSON_OBJECT")
 {
 	const Resident original{"Ada", City{"London"}, {"math", "logic"}};
 	const auto value = jw::to_value(original);

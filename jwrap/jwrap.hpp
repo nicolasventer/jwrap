@@ -450,7 +450,7 @@ namespace jw
 	{
 		static_assert(!std::is_same_v<T, T>,
 			"No jw::Converter available for this type. "
-			"Use JW_JSON_FIELDS, JW_JSON_ENUM, JW_JSON_VARIANT_TAG, JW_JSON_VARIANT_KEY, "
+			"Use JW_JSON_OBJECT, JW_JSON_ENUM, JW_JSON_VARIANT_TAG, JW_JSON_VARIANT_KEY, "
 			"or define a Converter specialization.");
 	};
 
@@ -1606,7 +1606,7 @@ namespace jw
 } // namespace jw
 
 // ============================================================
-// JW_JSON_FIELDS macro (up to 8 fields)
+// JW_JSON_OBJECT macro (up to 8 fields)
 // Invoke at global namespace scope.
 // ============================================================
 
@@ -1642,7 +1642,7 @@ namespace jw
 		JW_DETAIL_FIELDS_1,          \
 		extra)(T, __VA_ARGS__)
 
-#define JW_JSON_FIELDS(TYPE, ...)                                                                           \
+#define JW_JSON_OBJECT(TYPE, ...)                                                                           \
 	namespace jw                                                                                            \
 	{                                                                                                       \
 		template <> struct StructTraits<TYPE>                                                               \

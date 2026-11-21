@@ -10,7 +10,7 @@ struct Address
 	int zip;
 };
 
-JW_JSON_FIELDS(Address, city, zip)
+JW_JSON_OBJECT(Address, city, zip)
 
 enum class Role
 {
@@ -29,7 +29,7 @@ struct User
 	Address address;
 };
 
-JW_JSON_FIELDS(User, name, age, role, tags, address)
+JW_JSON_OBJECT(User, name, age, role, tags, address)
 
 int main()
 {

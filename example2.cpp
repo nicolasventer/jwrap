@@ -37,7 +37,7 @@ struct Marker
 	Point position;
 };
 
-JW_JSON_FIELDS(Marker, name, position)
+JW_JSON_OBJECT(Marker, name, position)
 
 int main()
 {
