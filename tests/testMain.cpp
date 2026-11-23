@@ -848,8 +848,14 @@ TEST_CASE("json schema helpers")
 	CHECK(jw::schema::nullable(jw::schema::integer())["anyOf"][1].get<std::string>("type") == "null");
 
 	CHECK(jw::schema::ref("Node").get<std::string>("$ref") == "#/$defs/Node");
+	CHECK(jw::schema::ref("Node", nullptr).get<std::string>("$ref") == "#/$defs/Node");
+	CHECK(jw::schema::ref("Node", "").get<std::string>("$ref") == "#/$defs/Node");
 	CHECK(jw::schema::ref("a/b").get<std::string>("$ref") == "#/$defs/a~1b");
 	CHECK(jw::schema::ref("a~b").get<std::string>("$ref") == "#/$defs/a~0b");
+	CHECK(jw::schema::ref("City", "city.json").get<std::string>("$ref") == "city.json#/$defs/City");
+	CHECK(jw::schema::ref("a/b", "https://example.com/schema.json").get<std::string>("$ref")
+		== "https://example.com/schema.json#/$defs/a~1b");
+	CHECK(jw::schema::ref("a~b", "dir/tree.json").get<std::string>("$ref") == "dir/tree.json#/$defs/a~0b");
 
 	const auto unchanged = jw::schema::defs(jw::schema::string(), {});
 	CHECK_FALSE(unchanged.has_key("$defs"));

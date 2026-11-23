@@ -661,7 +661,7 @@ namespace jw
 
 		inline Value nullable(const Value& schema) { return any_of({schema, null()}); }
 
-		inline Value ref(const char* name)
+		inline Value ref(const char* name, const char* origin = nullptr)
 		{
 			std::string escaped;
 			escaped.reserve(std::strlen(name));
@@ -673,8 +673,11 @@ namespace jw
 				else escaped += *cursor;
 			}
 
+			std::string pointer = "#/$defs/" + escaped;
+			if (origin != nullptr && origin[0] != '\0') pointer.insert(0, origin);
+
 			Value result = Value::object();
-			result.set("$ref", "#/$defs/" + escaped);
+			result.set("$ref", pointer);
 			return result;
 		}
 

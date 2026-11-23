@@ -566,7 +566,7 @@ jw::schema::object({
 });
 ```
 
-`ref` points at a `$defs` entry. `defs` attaches those entries to a schema. The name passed to `ref` is the key, so `ref("Node")` is `#/$defs/Node`.
+`ref` points at a `$defs` entry. `defs` attaches those entries to a schema. The name passed to `ref` is the key, so `ref("Node")` is `#/$defs/Node`. An optional origin prefixes that pointer with another document, so `ref("Node", "tree.json")` is `tree.json#/$defs/Node`. The origin is the document URI without a fragment, and a name's `/` and `~` are still escaped only inside the pointer.
 
 ```cpp
 jw::Value node = jw::schema::object({
